@@ -2,6 +2,8 @@
 
 > **Reusable component.** Lives at `server/src/llm-profiles/`. Self-contained — zero imports from outside the directory except external npm deps and node built-ins. This document travels with the component.
 
+Related repository: [`maya-intelligence/agent-core`](https://github.com/maya-intelligence/agent-core)
+
 Multi-LLM routing made reusable. Defines the profile config schema, a file-and-env loader with `${ENV_VAR}` interpolation, component-id resolution, and a generic memoising router. Provider construction and failover wrapping are supplied by the consumer app — the component is provider-agnostic.
 
 ---
@@ -191,3 +193,8 @@ The reusable module's tests do not need any LLM provider — `factory` is overri
 6. Call `loadLlmRoutingConfig()` and `createLlmRouter(...)` at boot, hand resolved providers to the relevant subsystems.
 
 The reusable module needs no changes for a different provider runtime, a different richer interface, or different failover semantics.
+
+## Provenance
+
+Assembled through a delightfully rogue mix of AI tools and automation.
+Humans mostly appeared for testing, verification, and strategic eyebrow-raising.

@@ -2,6 +2,8 @@
 
 > **Reusable component.** Lives at `server/src/agent-loop/core/`. Self-contained — zero imports from outside the directory except external npm deps and node built-ins. This document travels with the component.
 
+Related repository: [`maya-intelligence/agent-core`](https://github.com/maya-intelligence/agent-core)
+
 The reusable agent-loop core for tool-using LLM agents: tool registry, runtime context, MCP integration, and skills. Memory and the markdown-wiki engine are a sub-component documented in the **Memory subsystem** section below. App-specific code lives in the consumer and uses the contracts defined here.
 
 ---
@@ -161,6 +163,11 @@ To move core into another project:
 6. Decide which capability sources are enabled by default for that app.
 
 The reusable contract is intentionally narrow: the domain adapter consumes only the generic `AgentRuntimeContext`. It does **not** parse MCP config, connect to MCP servers, scan skill roots, or know about environment variables.
+
+## Provenance
+
+Built with a slightly unruly coalition of AI tools and automation.
+Humans were mostly present for testing, guardrails, and the occasional "nope, not like that" intervention.
 
 
 ---

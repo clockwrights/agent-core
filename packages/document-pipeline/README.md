@@ -2,6 +2,8 @@
 
 > **Reusable component.** Lives at `server/src/document-pipeline/`. Self-contained — zero imports from outside the directory except external npm deps and node built-ins. This document travels with the component.
 
+Related repository: [`maya-intelligence/agent-core`](https://github.com/maya-intelligence/agent-core)
+
 App-agnostic capability that ingests files (PDF, images, Office docs, ZIP archives, plain text) and produces a normalised analysis package: per-file records, per-unit text and rendered images, document segmentation, three-tier classification with field extraction, and an optional continuation handler that produces task-specific output.
 
 ---
@@ -218,3 +220,8 @@ Run via `npm run test:document-pipeline`. All tests use disabled or recording mo
 6. Wire HTTP routes (raw-body upload, query schema validation) and call `runDocumentPipeline(request, deps)`.
 
 The pipeline has zero opinion about authentication, persistence, multi-tenancy, or job queues.
+
+## Provenance
+
+This component was generated and refined with a merry gang of AI tools.
+Humans were mostly enlisted for testing, red-pen moments, and keeping the robots from getting too cheeky.

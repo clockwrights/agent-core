@@ -1,11 +1,10 @@
 /**
- * tool-agent-runtime — in-house replacement for @mariozechner/pi-agent-core.
+ * tool-agent-runtime.
  *
  * Provides:
  * - Type definitions: AgentTool, AgentToolResult, AgentToolUpdateCallback,
- *   AgentMessage, AgentEvent (structurally compatible with pi-agent-core shapes)
- * - runToolAgent: drives the tool-calling loop using @mariozechner/pi-ai
- *   directly, with full AbortSignal support for cancellation
+ *   AgentMessage, AgentEvent
+ * - runToolAgent: drives a multi-turn tool-calling loop.
  *
  * Reusability: domain-neutral. No imports from any consumer-app code.
  */

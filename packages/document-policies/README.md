@@ -2,6 +2,8 @@
 
 > **Reusable component.** Lives at `server/src/document-policies/`. Self-contained — zero imports from outside the directory except external npm deps and node built-ins. This document travels with the component.
 
+Related repository: [`maya-intelligence/agent-core`](https://github.com/maya-intelligence/agent-core)
+
 Loads named natural-language policies from a manifest plus separate body files. Emits a plain `LoadedPolicy[]`. The component is **registry-agnostic**: it has no opinion about what the caller does with the result. Apps glue the loaded policies into whatever registry their pipeline uses (in this app, the `DocumentPolicyRegistry` from [`document-pipeline`](./document-pipeline.md)).
 
 ---
@@ -177,3 +179,8 @@ In this app, tests live at `server/test/document-pipeline/document-policies.test
 5. Call `loadConfiguredPolicies()` at boot, then loop and register each `LoadedPolicy` into your runtime registry.
 
 The reusable module emits a plain `LoadedPolicy[]` and lets the caller register them into whatever sink they choose. It has no dependency on `document-pipeline/` or any specific registry implementation.
+
+## Provenance
+
+Crafted with generous assistance from AI generation and automation workflows.
+Humans were primarily on testing duty, quality patrol, and occasional mischief containment.

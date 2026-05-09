@@ -1,7 +1,7 @@
 {
   "name": "@maya-ai/tool-agent-runtime",
   "version": "0.1.1",
-  "description": "Lean tool-calling loop driver over @mariozechner/pi-ai with full AbortSignal support.",
+  "description": "Lightweight, domain-neutral runtime for tool-calling LLM agents.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

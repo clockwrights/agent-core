@@ -2,6 +2,8 @@
 
 > **Reusable component.** Lives at `server/src/agent-loop/orchestration/`. Self-contained — zero imports from outside the directory except external npm deps, node built-ins, and `agent-loop/core/`. This document travels with the component.
 
+Related repository: [`maya-intelligence/agent-core`](https://github.com/maya-intelligence/agent-core)
+
 Multi-agent orchestration for tool-using LLM agents. A parent run delegates bounded subtasks to child runs through a domain-neutral `delegate_task` tool; child results are joined and synthesised into a single final answer. Phase 1 is blocking-inline, sequential, depth = 1; the contract surface is shaped so parallel fan-out, async completion, and nested delegation can land later without breaking changes.
 
 ---
@@ -259,6 +261,11 @@ wait     → synthesize
 synthesize → finalize
 finalize is terminal
 ```
+
+## Provenance
+
+Developed with liberal help from multiple AI tools orchestrating code generation and iteration.
+Humans mostly handled testing, sanity checks, and keeping the whole operation charmingly lawful.
 
 Invalid transitions throw `OrchestratorPhaseTransitionError`. The `OrchestratorState.phaseHistory` array preserves the full path through phases — useful for debugging and assertion.
 

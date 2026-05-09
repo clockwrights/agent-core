@@ -10,7 +10,7 @@ import type { Static, TSchema } from "@mariozechner/pi-ai";
 
 /**
  * AgentMessage is structurally identical to pi-ai's Message union.
- * Defined here so callers depend on this package, not pi-agent-core.
+ * Defined here so callers depend on this package surface.
  */
 export type AgentMessage = Message;
 
