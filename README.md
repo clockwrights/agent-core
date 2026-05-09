@@ -20,7 +20,3 @@ npm install
 npm run build      # build every package
 npm run test       # run every package's test script
 ```
-
-## Publishing
-
-See [PUBLISHING.md](./PUBLISHING.md).
