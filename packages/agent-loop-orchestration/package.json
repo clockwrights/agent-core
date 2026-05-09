@@ -1,0 +1,47 @@
+{
+  "name": "@maya-ai/agent-loop-orchestration",
+  "version": "0.1.0",
+  "description": "Multi-agent orchestration: a parent run delegates bounded subtasks to child runs through delegate_task / delegate_tasks. Sequential and parallel fan-out, depth = 1, blocking-inline.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@maya-ai/agent-loop-core": "^0.1.0",
+    "@maya-ai/tool-agent-runtime": "^0.1.0",
+    "typebox": "^1.1.24",
+    "uuid": "^14.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.17",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "llm",
+    "agent",
+    "multi-agent",
+    "orchestration",
+    "delegation",
+    "ai"
+  ]
+}

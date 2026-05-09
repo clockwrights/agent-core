@@ -1,0 +1,40 @@
+{
+  "name": "@maya-ai/llm-profiles",
+  "version": "0.1.0",
+  "description": "Multi-LLM profile config schema, file-and-env loader with ${ENV_VAR} interpolation, component-id resolution, and a generic memoising router. Provider construction and failover wrapping are supplied by the consumer app.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.17",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "llm",
+    "routing",
+    "profiles",
+    "ai",
+    "failover"
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "name": "@maya-ai/document-policies",
+  "version": "0.1.0",
+  "description": "Loads named natural-language document policies from a manifest plus separate body files. Emits a plain LoadedPolicy[] — registry-agnostic.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@maya-ai/document-pipeline": "^0.1.0",
+    "@types/node": "^22.19.17",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "document",
+    "policies",
+    "manifest",
+    "ai"
+  ]
+}

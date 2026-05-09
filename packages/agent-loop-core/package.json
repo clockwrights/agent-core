@@ -1,0 +1,47 @@
+{
+  "name": "@maya-ai/agent-loop-core",
+  "version": "0.1.0",
+  "description": "Reusable agent-loop core for tool-using LLM agents: tool registry, runtime context, MCP integration, skills, and the agent memory subsystem (incl. markdown-wiki engine).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@maya-ai/tool-agent-runtime": "^0.1.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "typebox": "^1.1.24"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.17",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "llm",
+    "agent",
+    "tool-calling",
+    "mcp",
+    "memory",
+    "skills",
+    "ai"
+  ]
+}

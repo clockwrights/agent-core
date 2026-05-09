@@ -1,0 +1,40 @@
+{
+  "name": "@maya-ai/tool-agent-runtime",
+  "version": "0.1.0",
+  "description": "Lean tool-calling loop driver over @mariozechner/pi-ai with full AbortSignal support.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "echo \"no tests\" && exit 0",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@mariozechner/pi-ai": "^0.73.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "llm",
+    "agent",
+    "tool-calling",
+    "ai"
+  ]
+}

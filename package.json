@@ -1,0 +1,19 @@
+{
+  "name": "maya-ai-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @maya-ai/tool-agent-runtime && npm run build -w @maya-ai/agent-loop-core && npm run build -w @maya-ai/agent-loop-orchestration && npm run build -w @maya-ai/document-pipeline && npm run build -w @maya-ai/document-policies && npm run build -w @maya-ai/llm-profiles",
+    "test": "npm run test --workspaces --if-present",
+    "publish:all": "npm publish --workspaces --access public"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.17",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
