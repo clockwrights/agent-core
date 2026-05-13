@@ -2,7 +2,7 @@
 
 Composable building blocks for tool-using LLM agent applications.
 
-This monorepo follows a strict "zero domain coupling" rule: every package is intentionally reusable and documented at the component level.
+This monorepo is designed to minimize domain coupling: every package is intentionally reusable and documented at the component level.
 
 ## Why this repo exists
 
@@ -21,9 +21,30 @@ This monorepo follows a strict "zero domain coupling" rule: every package is int
 | [`@maya-ai/document-policies`](./packages/document-policies) | Manifest + Markdown body loader for named natural-language document policies. |
 | [`@maya-ai/llm-profiles`](./packages/llm-profiles) | Multi-LLM profile config schema, loader with `${ENV_VAR}` interpolation, and a generic memoizing router. |
 
-## Related repository
+## How the packages fit together
 
-- [`maya-intelligence/agent-core`](https://github.com/maya-intelligence/agent-core): companion project with broader agent runtime and application patterns.
+```
+@maya-ai/tool-agent-runtime         the inner loop: stream a model, run tools, emit events
+        ▲
+        │ used by
+        │
+@maya-ai/agent-loop-core            tool registry, runtime context, MCP, skills, memory
+        ▲
+        │ used by
+        │
+@maya-ai/agent-loop-orchestration   multi-agent delegation on top of the loop
+
+@maya-ai/document-pipeline          end-to-end document ingestion → classification → continuation
+        │ optionally consumes
+        ▼
+@maya-ai/document-policies          file-based loader for named natural-language policies
+
+@maya-ai/llm-profiles               provider-agnostic routing config + memoising router
+                                    (independent — pair with any of the above when you need
+                                    component-aware LLM selection)
+```
+
+Every package is independently usable and has a single-line dependency story in its own README.
 
 ## Workspace commands
 

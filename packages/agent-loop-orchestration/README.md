@@ -1,10 +1,16 @@
-# Agent Loop Orchestration
+# @maya-ai/agent-loop-orchestration
 
-> **Reusable component.** Lives at `server/src/agent-loop/orchestration/`. Self-contained — zero imports from outside the directory except external npm deps, node built-ins, and `agent-loop/core/`. This document travels with the component.
+Multi-agent orchestration for tool-using LLM agents. A parent run delegates bounded subtasks to child runs through a domain-neutral `delegate_task` (or batched `delegate_tasks`) tool; child results are joined and synthesised into a single final answer.
 
-Related repository: [`maya-intelligence/agent-core`](https://github.com/maya-intelligence/agent-core)
+Phase 1 is blocking-inline, depth = 1; sequential single-delegations through `delegate_task`, parallel fan-out through `delegate_tasks`. The contract surface is shaped so async completion and nested delegation can land later without breaking changes.
 
-Multi-agent orchestration for tool-using LLM agents. A parent run delegates bounded subtasks to child runs through a domain-neutral `delegate_task` tool; child results are joined and synthesised into a single final answer. Phase 1 is blocking-inline, sequential, depth = 1; the contract surface is shaped so parallel fan-out, async completion, and nested delegation can land later without breaking changes.
+Built on top of [`@maya-ai/agent-loop-core`](https://www.npmjs.com/package/@maya-ai/agent-loop-core) and [`@maya-ai/tool-agent-runtime`](https://www.npmjs.com/package/@maya-ai/tool-agent-runtime).
+
+## Install
+
+```bash
+npm install @maya-ai/agent-loop-orchestration @maya-ai/agent-loop-core @maya-ai/tool-agent-runtime
+```
 
 ---
 
@@ -173,7 +179,7 @@ import {
   type RunOrchestratorInput,
   type RunOrchestratorOutput,
   type RunSynthesisInput
-} from "./agent-loop/orchestration/index.js";
+} from "@maya-ai/agent-loop-orchestration";
 ```
 
 ---
@@ -261,11 +267,6 @@ wait     → synthesize
 synthesize → finalize
 finalize is terminal
 ```
-
-## Provenance
-
-Developed with liberal help from multiple AI tools orchestrating code generation and iteration.
-Humans mostly handled testing, sanity checks, and keeping the whole operation charmingly lawful.
 
 Invalid transitions throw `OrchestratorPhaseTransitionError`. The `OrchestratorState.phaseHistory` array preserves the full path through phases — useful for debugging and assertion.
 
@@ -533,3 +534,11 @@ The scripted-LLM stub in `orchestratorIntegration.test.ts` is the closest harnes
 6. Optionally provide a richer registry. The in-memory `createInMemoryChildRunRegistry` is fine for one-shot request flows; persistent stores can implement the same `ChildRunRegistry` contract.
 
 The reusable contract is intentionally narrow: `ChildRunRequest`, `ChildRunResultEnvelope`, `OrchestrationPolicy`, `PresetOverrides`, `DelegateToolContext`, `RunOrchestratorInput`. Everything domain-specific (which tools children can call, how the parent's prompt is composed, how the final answer is rendered) flows through these contracts. None of them mention domain vocabulary.
+
+## License
+
+MIT.
+
+## Provenance
+
+Developed with liberal help from multiple AI tools orchestrating code generation and iteration. Humans mostly handled testing, sanity checks, and keeping the whole operation charmingly lawful.

@@ -1,10 +1,14 @@
-# Document Policies
+# @maya-ai/document-policies
 
-> **Reusable component.** Lives at `server/src/document-policies/`. Self-contained — zero imports from outside the directory except external npm deps and node built-ins. This document travels with the component.
+Loads named natural-language policies from a manifest plus separate body files. Emits a plain `LoadedPolicy[]`. The package is **registry-agnostic**: it has no opinion about what the caller does with the result. Apps glue the loaded policies into whatever registry their pipeline uses — for example, the `DocumentPolicyRegistry` from [`@maya-ai/document-pipeline`](https://www.npmjs.com/package/@maya-ai/document-pipeline).
 
-Related repository: [`maya-intelligence/agent-core`](https://github.com/maya-intelligence/agent-core)
+Zero runtime dependencies beyond Node built-ins (`node:crypto`, `node:fs`, `node:path`).
 
-Loads named natural-language policies from a manifest plus separate body files. Emits a plain `LoadedPolicy[]`. The component is **registry-agnostic**: it has no opinion about what the caller does with the result. Apps glue the loaded policies into whatever registry their pipeline uses (in this app, the `DocumentPolicyRegistry` from [`document-pipeline`](./document-pipeline.md)).
+## Install
+
+```bash
+npm install @maya-ai/document-policies
+```
 
 ---
 
@@ -26,7 +30,7 @@ import {
   DocumentPoliciesConfigError,
   type DocumentPoliciesManifest,
   type LoadedPolicy,
-} from "./document-policies";
+} from "@maya-ai/document-policies";
 ```
 
 ### Types
@@ -130,24 +134,24 @@ The intent is "loud and early" for any deploy mistake. The only soft state is a 
 
 ## Boot-time audit log
 
-After a successful load, this app logs one line per policy with `name`, `version`, the first 12 chars of `contentHash`, and the resolved `sourcePath`:
+`LoadedPolicy` exposes `name`, `version`, `contentHash`, and `sourcePath` — everything an app needs for a per-policy startup log. A typical line includes the first 12 chars of `contentHash` and the resolved path:
 
 ```
 [document-policies] loaded 2 policies: [
-  { name: 'identity-documents', version: '1.0.0', contentHash: 'bcd069e38a1c', sourcePath: '…/server/policies/identity-documents.md' },
-  { name: 'contract-review',    version: '1.0.0', contentHash: 'a8de270d5d3d', sourcePath: '…/server/policies/contract-review.md' }
+  { name: 'identity-documents', version: '1.0.0', contentHash: 'bcd069e38a1c', sourcePath: '…/policies/identity-documents.md' },
+  { name: 'contract-review',    version: '1.0.0', contentHash: 'a8de270d5d3d', sourcePath: '…/policies/contract-review.md' }
 ]
 ```
 
-Policy *bodies* are never logged — hashes + paths are sufficient for auditability without exposing customer-shaped sample data.
+Policy *bodies* are never logged by this package — hashes + paths are sufficient for auditability without exposing customer-shaped sample data.
 
 ---
 
 ## Integration sketch
 
 ```ts
-import { loadConfiguredPolicies } from "./document-policies";
-import { DocumentPolicyRegistry } from "./document-pipeline/policy.js"; // or any registry
+import { loadConfiguredPolicies } from "@maya-ai/document-policies";
+import { DocumentPolicyRegistry } from "@maya-ai/document-pipeline"; // or any registry
 
 const registry = new DocumentPolicyRegistry();
 for (const p of loadConfiguredPolicies()) {
@@ -159,28 +163,10 @@ The reusable lib needs no changes for a different registry implementation, diffe
 
 ---
 
-## Tests
+## License
 
-In this app, tests live at `server/test/document-pipeline/document-policies.test.ts` (17 tests):
-
-- Manifest loader: absent-returns-null, valid round-trip, malformed JSON throws, missing `policies` array throws, duplicate name throws, broken entry shapes throw, env override path missing throws, `${ENV_VAR}` interpolation, explicit `failOnMissingFile=false` / `failOnEmptyPolicy=false` honoured.
-- Body loader: defaults version to "1.0.0", computes SHA-256 hash, missing-with-fail throws, missing-without-fail warns and skips, empty-with-fail throws, empty-without-fail warns and skips.
-- `loadConfiguredPolicies`: empty when manifest absent, full round-trip when both manifest and bodies present.
-- Integration: `LoadedPolicy[]` registers cleanly into a real `DocumentPolicyRegistry`.
-
----
-
-## Extracting to Another App
-
-1. Copy or package `server/src/document-policies/`.
-2. No runtime deps beyond Node built-ins (`node:crypto`, `node:fs`, `node:path`).
-3. Decide your file layout — typically `server/policies/<name>.md` next to a `server/config/document-policies.json` manifest, but any layout works as long as `policiesDir` and `file` paths agree.
-4. Drop a `server/config/document-policies.json` and the body files.
-5. Call `loadConfiguredPolicies()` at boot, then loop and register each `LoadedPolicy` into your runtime registry.
-
-The reusable module emits a plain `LoadedPolicy[]` and lets the caller register them into whatever sink they choose. It has no dependency on `document-pipeline/` or any specific registry implementation.
+MIT.
 
 ## Provenance
 
-Crafted with generous assistance from AI generation and automation workflows.
-Humans were primarily on testing duty, quality patrol, and occasional mischief containment.
+Crafted with generous assistance from AI generation and automation workflows. Humans were primarily on testing duty, quality patrol, and occasional mischief containment.

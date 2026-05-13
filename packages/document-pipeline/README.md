@@ -1,22 +1,34 @@
-# Document Pipeline
+# @maya-ai/document-pipeline
 
-> **Reusable component.** Lives at `server/src/document-pipeline/`. Self-contained — zero imports from outside the directory except external npm deps and node built-ins. This document travels with the component.
+App-agnostic pipeline that ingests files (PDF, images, Office docs, ZIP archives, plain text) and produces a normalised analysis package: per-file records, per-unit text and rendered images, document segmentation, three-tier classification with field extraction, and an optional continuation handler that produces task-specific output.
 
-Related repository: [`maya-intelligence/agent-core`](https://github.com/maya-intelligence/agent-core)
+The pipeline is provider-neutral. The LLM, the OCR engine, the policy registry, and any extra format extractors are dependency-injected — there are no global singletons.
 
-App-agnostic capability that ingests files (PDF, images, Office docs, ZIP archives, plain text) and produces a normalised analysis package: per-file records, per-unit text and rendered images, document segmentation, three-tier classification with field extraction, and an optional continuation handler that produces task-specific output.
+## Install
 
----
+```bash
+npm install @maya-ai/document-pipeline
+```
+
+Optional peer dependencies (declared as `peerDependencies` with `optional: true`):
+
+| Package | Needed for |
+|---|---|
+| `pdfjs-dist` (`^4.10.38`) | PDF decomposition + rendering. |
+| `@napi-rs/canvas` | Rendering PDF pages to image bytes. |
+| `xlsx` (`^0.18.5`) | Spreadsheet extraction. |
+
+Install only the ones whose formats you care about. Pipeline calls into a missing peer surface as a per-stage warning, not a crash.
 
 ## Public API
 
 ```ts
-import { runDocumentPipeline } from "./document-pipeline/pipeline.js";
-import type {
-  DocumentPipelineRequest,
-  DocumentPipelineResult,
-  DocumentPipelineDeps,
-} from "./document-pipeline/pipeline.js";
+import {
+  runDocumentPipeline,
+  type DocumentPipelineRequest,
+  type DocumentPipelineResult,
+  type DocumentPipelineDeps,
+} from "@maya-ai/document-pipeline";
 
 const result: DocumentPipelineResult = await runDocumentPipeline(request, deps);
 ```
@@ -25,23 +37,31 @@ const result: DocumentPipelineResult = await runDocumentPipeline(request, deps);
 
 | Field | Type | Purpose |
 |-------|------|---------|
-| `llmProvider` | `PipelineLlmAdapter` | Used by Tier B classification, segmentation, continuation. See `./llm.ts`. |
+| `llmProvider` | `PipelineLlmAdapter` | Used by Tier B classification, segmentation, continuation. |
 | `tierCAdapter` | `PipelineLlmAdapter` | Multimodal Tier-C-specific provider. Falls back to `llmProvider` when omitted. |
 | `ocrPlugin` | `OCRPlugin` | Injected into the extraction stage. |
 | `policyRegistry` | `DocumentPolicyRegistry` | Resolves `request.policyName` to a `DocumentPolicy`. |
 | `extraExtractors` | `ExtractorPlugin[]` | Merged with the built-in extractors. |
 | `continuationHandler` | `ContinuationHandler` | Called after assembly when `request.taskIntent` is present. |
 
-The pipeline depends on a **narrow LLM adapter** (`PipelineLlmAdapter` in `./llm.ts`), not on any concrete provider:
+The pipeline depends on a **narrow LLM adapter** (`PipelineLlmAdapter`), not on any concrete provider:
 
 ```ts
 export interface PipelineLlmAdapter {
   readonly enabled: boolean;
   generate(request: PipelineLlmRequest): Promise<PipelineLlmResponse | undefined>;
 }
+
+type PipelineLlmRequest = {
+  systemPrompt: string;
+  prompt: string;
+  sessionId: string;
+  maxTokens?: number;
+  images?: { data: string; mimeType: string }[]; // base64-encoded for Tier C
+};
 ```
 
-Apps wrap their concrete `LlmProvider` into this shape via a small shim (in this app: `server/src/llm/pipeline-adapter.ts`).
+The pipeline never sends tool definitions through this adapter — tool use belongs to the agent loop, not the pipeline. Adapters that don't support multimodal calls SHOULD ignore `images` and record that they did so.
 
 ---
 
@@ -114,9 +134,9 @@ The "unknown" fallback group has `classificationTier: <minTier>` so the result r
 
 `request.context.submissionIntent` (separate from `taskIntent`) is a hint about why the submission was made; it flows into the segmentation LLM prompt and the continuation handler's `appContext`.
 
-### Server-wide defaults via env (parsed by `pipeline-config.ts`)
+### App-wide defaults via env
 
-When the consumer app calls `loadPipelineDefaults()`:
+The package exports `loadPipelineDefaults()` which reads these env vars once and returns a `DocumentPipelineDefaults` object the caller can merge into requests:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -129,9 +149,9 @@ Invalid env values (unknown enum, non-numeric threshold, out-of-range threshold)
 
 ### Priority order
 
-1. Per-request field on `DocumentPipelineRequest`
-2. Matching `LLM_DEFAULT_*` env var (read once at boot)
-3. Built-in default in `pipeline-config.ts`
+1. Per-request field on `DocumentPipelineRequest`.
+2. Matching `LLM_DEFAULT_*` env var (read once via `loadPipelineDefaults()`).
+3. Built-in default.
 
 ---
 
@@ -152,76 +172,54 @@ ZIP support is in `zip.ts`. When `fileRecord.mimeType === "application/zip"`:
 
 ## Document Policies
 
-Policies are natural-language rule sets (spec §6) injected into Tier-B and Tier-C prompts. Implementation lives in `policy.ts`:
+Policies are natural-language rule sets injected into Tier-B and Tier-C prompts:
 
-- `DocumentPolicy` — `{ name, version, contentHash, policyText }` (SHA-256 hash computed at registration).
-- `DocumentPolicyRegistry` — in-memory store with `register(name, text, version?)`, `get(name)`, `list()`, `remove(name)`, `size`.
+- `DocumentPolicy` — `{ name, version, contentHash, policyText }` (SHA-256 of the policy text computed at registration).
+- `DocumentPolicyRegistry` — in-memory store with `register(name, text, version?)`, `get(name)`, `list()`, `remove(name)`, `size`. Also exported as `defaultPolicyRegistry` (module-level singleton, useful for apps that want a single default).
 - `buildClassificationPrompt(policy, group, units, extractions, context?)` — produces `{ systemPrompt, userPrompt }`.
 - `buildFieldExtractionPrompt(fieldName, documentLabel, policy?)` — focused single-field prompt for Tier-C refinement.
 
 When no policy is provided, the prompts run in **open-vocabulary mode** — the model classifies freely, marking everything as `unsupported: false`.
 
-For loading policy bodies from external files (manifest + Markdown bodies), see [`document-policies`](./document-policies.md) — that's a separate reusable component dedicated to policy loading.
+For loading policy bodies from external files (manifest + Markdown bodies), see the sibling package [`@maya-ai/document-policies`](https://www.npmjs.com/package/@maya-ai/document-policies). It emits a plain `LoadedPolicy[]`; the consumer app glues those into a `DocumentPolicyRegistry`.
 
 ---
 
 ## Multimodal (Tier C)
 
-Real image bytes are transmitted, not text hints. The pipeline's `PipelineLlmRequest.images?: PipelineImage[]` carries `{ data: <base64>, mimeType }` parts. Adapters that don't support multimodal (e.g. a disabled stub) ignore the field.
+Real image bytes are transmitted, not text hints. `PipelineLlmRequest.images` carries `{ data: <base64>, mimeType }` parts. Adapters that don't support multimodal (e.g. a disabled stub) ignore the field.
 
-Stage 4 LLM-assisted segmentation in `full-multimodal` mode attaches up to **12** page images (first image per unit, capped at `MAX_SEGMENT_IMAGES`). When images are attached, the prompt enumerates which page indices the model is seeing.
-
----
-
-## HTTP Integration Sketch
-
-The pipeline doesn't include HTTP wiring — that's the consumer app's job. In this app, `server/src/routes/documents.ts` exposes:
-
-```
-POST /api/documents/analyze
-GET  /api/documents/policies
-```
-
-with raw-body uploads (`Content-Type: <file mime type>`, up to 50 MB) and query params for the per-request fields above. Errors return `{ error, details? }` with appropriate HTTP status.
+LLM-assisted segmentation in `full-multimodal` mode attaches up to **12** page images (the first image per unit). When images are attached, the prompt enumerates which page indices the model is seeing.
 
 ---
 
-## Tests
+## Continuation handlers
 
-In this app, tests live at `server/test/document-pipeline/`:
+When `request.taskIntent` is set and `deps.continuationHandler` is provided, the pipeline runs a final stage that turns the analysis package into a task-shaped result. Two built-in handlers ship with the package:
 
-| File | Purpose |
-|------|---------|
-| `ingest.test.ts` | MIME detection, ingest validation |
-| `decompose.test.ts` | Per-format decomposition |
-| `ocr.test.ts` | OCR plugin contract, coordinate normalisation |
-| `policy.test.ts` | Registry + prompt builders |
-| `assemble.test.ts` | Package assembly + log validation |
-| `segment.test.ts` | Structural + LLM-assisted segmentation, multimodal segmentation |
-| `classify.test.ts` | Three-tier cascade, threshold semantics, `minTier`, Tier-C image attachment |
-| `pdf-extractor.test.ts` | A2 regression — pdfjs render API |
-| `continue.test.ts` | LLM and passthrough continuation handlers |
-| `pipeline.test.ts` | End-to-end orchestration |
-| `route.test.ts` | HTTP integration via supertest |
-| `zip.test.ts` | ZIP support and per-entry failure modes |
-| `pipeline-config.test.ts` | Env-default parsing |
+| Factory | Behaviour |
+|---|---|
+| `createLlmContinuationHandler(llm, options?)` | Calls the LLM with a structured prompt; expects JSON back. Useful for "extract the address and name from the ID card". |
+| `createPassthroughContinuationHandler()` | Resolves the task by collecting all extracted fields directly from the package. No LLM call. Useful as a test double or a deterministic fallback. |
 
-Run via `npm run test:document-pipeline`. All tests use disabled or recording mocks — no live LLM, no OCR provider.
+Apps are free to plug in any `ContinuationHandler` — the pipeline core never decides which one to use.
 
 ---
 
-## Extracting to Another App
+## Integration
 
-1. Copy or package `server/src/document-pipeline/`.
-2. Keep runtime deps: `pdfjs-dist@4`, `xlsx`, `file-type@19`, `adm-zip@0.5`, `@napi-rs/canvas`.
-3. Provide a concrete `PipelineLlmAdapter` (wrap your app's LLM provider — see `server/src/llm/pipeline-adapter.ts` for a one-screen example).
-4. Optionally provide an `OCRPlugin` for image/PDF text recovery.
-5. Optionally provide a `DocumentPolicyRegistry` (see [`document-policies`](./document-policies.md) for a reusable manifest-based loader).
-6. Wire HTTP routes (raw-body upload, query schema validation) and call `runDocumentPipeline(request, deps)`.
+The pipeline has zero opinion about HTTP, authentication, persistence, multi-tenancy, or job queues. A typical wiring:
 
-The pipeline has zero opinion about authentication, persistence, multi-tenancy, or job queues.
+1. Build a `PipelineLlmAdapter` that wraps your concrete LLM provider (e.g. one built from [`@maya-ai/llm-profiles`](https://www.npmjs.com/package/@maya-ai/llm-profiles)).
+2. Optionally build an `OCRPlugin` for image / scanned-PDF text recovery.
+3. Optionally build a `DocumentPolicyRegistry` and (re)load policy bodies from disk using [`@maya-ai/document-policies`](https://www.npmjs.com/package/@maya-ai/document-policies).
+4. In your route handler, read the raw upload, construct a `DocumentPipelineRequest`, and call `runDocumentPipeline(request, deps)`.
+5. Persist or return `result.analysisPackage` and `result.continuationResult` (when present).
+
+## License
+
+MIT.
 
 ## Provenance
 
-This component was generated and refined with a merry gang of AI tools.
-Humans were mostly enlisted for testing, red-pen moments, and keeping the robots from getting too cheeky.
+This component was generated and refined with a merry gang of AI tools. Humans were mostly enlisted for testing, red-pen moments, and keeping the robots from getting too cheeky.
