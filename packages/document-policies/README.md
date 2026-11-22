@@ -51,10 +51,18 @@ type DocumentPoliciesManifest = {
 
 type LoadedPolicy = {
   name: string;
-  text: string;
+  text: string;             // policy body (front-matter removed, if any)
   version: string;
   sourcePath: string;       // absolute path the body was read from
-  contentHash: string;      // SHA-256, useful for boot-time audit logs
+  contentHash: string;      // SHA-256 of the file as read, useful for boot-time audit logs
+  // From front-matter (see below); only set when present:
+  appliesTo?: string[];
+  severity?: "info" | "warning" | "error";
+  component?: string;
+  outputSchema?: { path: string; schema: Record<string, unknown>; contentHash: string };
+  examples?: { path: string; text: string; contentHash: string }[];
+  meta?: Record<string, string | string[]>;   // keys this package does not interpret
+  rules?: PolicyRule[];     // `{#rule-id}` anchors; always set by the loader ([] when none)
 };
 ```
 
@@ -113,6 +121,66 @@ The manifest only contains paths/names. **Policy bodies are never inlined in env
 ```
 
 `server/policies/identity-documents.md` and `server/policies/contract-review.md` contain the natural-language policy bodies. Markdown is conventional but not required — any text format works.
+
+---
+
+## Front-matter (optional)
+
+A policy file may start with a front-matter block. Files without one load exactly as before.
+
+```markdown
+---
+appliesTo: [passport, id-card]
+severity: error
+component: document-pipeline
+outputSchema: identity.schema.json
+examples:
+  - examples/passport-ok.md
+  - examples/passport-expired.md
+owner: kyc-team
+---
+# Identity documents
+...
+```
+
+| Key | Becomes | Notes |
+|---|---|---|
+| `appliesTo` | `appliesTo: string[]` | Document labels/types; a single value becomes a one-item list. |
+| `severity` | `severity` | `info`, `warning` or `error`. Rules inherit it. |
+| `component` | `component` | Free text naming the consumer. |
+| `outputSchema` | `outputSchema: { path, schema, contentHash }` | JSON Schema file, relative to the policy file. Must be a JSON object. |
+| `examples` | `examples: { path, text, contentHash }[]` | Files relative to the policy file, read as text. |
+| anything else | `meta` | Kept verbatim. |
+
+The format is a small YAML subset, parsed without dependencies: `key: value`, `key: [a, b]` (no commas inside items), `key:` followed by `  - item` lines, optional quotes, `#` comment lines. Nested maps are not supported.
+
+- A `---` block counts as front-matter only when the file's first line is exactly `---`, a closing `---` exists, and the first non-comment line inside looks like `key:`. A Markdown file that opens with a horizontal rule followed by prose stays plain body text.
+- Once a block counts as front-matter, a line that does not parse, an unknown `severity`, a duplicate key or an unreadable `outputSchema` is a `DocumentPoliciesConfigError`.
+- Missing `outputSchema` / `examples` files follow `failOnMissingFile` (throw, or warn and skip the whole policy).
+- `text` is the body without the block; `contentHash` covers the whole file, so a metadata change shows up in the audit log. Registries that hash `text` (like `DocumentPolicyRegistry`) will hash only the body.
+
+---
+
+## Rule anchors and verdicts
+
+End a heading or list item with `{#rule-id}` to make it a citable rule:
+
+```markdown
+## Passport must be valid {#passport-valid}
+- Expiry date is after the submission date {#passport-expiry}
+- Name matches the application {#name-match}
+```
+
+- `LoadedPolicy.rules` lists them: `{ id, text, line, severity? }`. A heading rule's text runs to the next heading of the same or higher level; a list-item rule includes its indented continuation lines. Anchors in fenced code blocks or plain paragraphs are ignored; duplicate ids are a config error.
+- The anchors stay in `text`, so the model sees the ids it should cite.
+- `buildRuleCitationInstructions(rules)` returns prompt text asking for `{"verdicts": [{ ruleId, outcome, evidence[], note? }]}` with `outcome` one of `pass`, `fail`, `not_applicable`, `uncertain`.
+- `checkPolicyVerdicts(output, rules, { requireEvidenceFor? })` validates the model's answer (object, array or JSON string, fences allowed). It never throws on model output: verdicts citing unknown rules, second verdicts for a rule, bad outcomes and `pass`/`fail` without evidence are dropped and explained in `problems`; rules with no valid verdict are listed in `missingRuleIds`. Kept verdicts carry the rule's severity.
+
+```ts
+const prompt = `${policy.text}\n\n${buildRuleCitationInstructions(policy.rules ?? [])}`;
+const reply = await myModel(prompt);
+const { verdicts, missingRuleIds, problems } = checkPolicyVerdicts(reply, policy.rules ?? []);
+```
 
 ---
 

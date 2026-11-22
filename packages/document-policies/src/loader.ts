@@ -9,7 +9,9 @@
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { parsePolicyFile, type ParsedPolicyFile, type PolicySeverity } from "./frontMatter.js";
+import { extractPolicyRules, type PolicyRule } from "./rules.js";
 import {
   DocumentPoliciesConfigError,
   loadPoliciesManifest,
@@ -23,12 +25,33 @@ import {
 
 export type LoadedPolicy = {
   name: string;
+  /** Policy body. Without front-matter this is the whole file, unchanged. */
   text: string;
   version: string;
   /** Absolute path the body was read from. Useful for boot-time audit logs. */
   sourcePath: string;
-  /** SHA-256 of the policy body. Useful for boot-time audit logs. */
+  /**
+   * SHA-256 of the policy file as read (front-matter included, so metadata
+   * changes are visible in audits). Equals the body hash for files without
+   * front-matter. Referenced files carry their own hashes.
+   */
   contentHash: string;
+  /** Front-matter fields (only set when the file has front-matter). */
+  appliesTo?: string[];
+  severity?: PolicySeverity;
+  component?: string;
+  /** Parsed JSON Schema from `outputSchema:` (path relative to the policy file). */
+  outputSchema?: { path: string; schema: Record<string, unknown>; contentHash: string };
+  /** Files listed under `examples:` (paths relative to the policy file). */
+  examples?: Array<{ path: string; text: string; contentHash: string }>;
+  /** Front-matter keys this package does not interpret, kept verbatim. */
+  meta?: Record<string, string | string[]>;
+  /**
+   * Rules anchored with `{#rule-id}` in the body. The loader always sets it
+   * (empty when there are none); optional in the type so hand-built values
+   * stay valid.
+   */
+  rules?: PolicyRule[];
 };
 
 export type LoadPoliciesOptions = {
@@ -88,16 +111,92 @@ export function loadPolicies(
       continue;
     }
 
-    out.push({
-      name: entry.name,
-      text,
-      version: entry.version ?? "1.0.0",
-      sourcePath,
-      contentHash: sha256(text),
-    });
+    const loaded = buildLoadedPolicy(entry.name, entry.version ?? "1.0.0", sourcePath, text, manifest, readFile);
+    if (loaded) out.push(loaded);
   }
 
   return out;
+}
+
+function buildLoadedPolicy(
+  name: string,
+  version: string,
+  sourcePath: string,
+  raw: string,
+  manifest: DocumentPoliciesManifest,
+  readFile: (path: string) => string | undefined,
+): LoadedPolicy | null {
+  let parsed: ParsedPolicyFile;
+  let rules: PolicyRule[];
+  try {
+    parsed = parsePolicyFile(raw);
+    rules = extractPolicyRules(parsed.body, parsed.frontMatter?.severity);
+  } catch (err) {
+    // A present-but-broken policy file is always a bug: never fall back silently.
+    throw new DocumentPoliciesConfigError(`policy "${name}" at "${sourcePath}": ${(err as Error).message}`, sourcePath);
+  }
+
+  const policy: LoadedPolicy = { name, text: parsed.body, version, sourcePath, contentHash: sha256(raw), rules };
+  const fm = parsed.frontMatter;
+  if (!fm) return policy;
+
+  if (parsed.body.trim() === "") {
+    if (manifest.failOnEmptyPolicy) {
+      throw new DocumentPoliciesConfigError(`policy "${name}" body at "${sourcePath}" is empty.`, sourcePath);
+    }
+    console.warn(`[document-policies] policy "${name}" body at "${sourcePath}" is empty; skipping.`);
+    return null;
+  }
+  if (fm.appliesTo) policy.appliesTo = fm.appliesTo;
+  if (fm.severity) policy.severity = fm.severity;
+  if (fm.component) policy.component = fm.component;
+  if (Object.keys(fm.extra).length > 0) policy.meta = fm.extra;
+
+  // Referenced files resolve against the policy file's folder.
+  const baseDir = dirname(sourcePath);
+  const readReferenced = (relative: string, what: string): { path: string; text: string } | null => {
+    const path = resolve(baseDir, relative);
+    const text = readFile(path);
+    if (text !== undefined) return { path, text };
+    if (manifest.failOnMissingFile) {
+      throw new DocumentPoliciesConfigError(`policy "${name}" ${what} not found at "${path}".`, path);
+    }
+    console.warn(`[document-policies] policy "${name}" ${what} not found at "${path}"; skipping the policy.`);
+    return null;
+  };
+
+  if (fm.outputSchema) {
+    const file = readReferenced(fm.outputSchema, "outputSchema");
+    if (!file) return null;
+    let schema: unknown;
+    try {
+      schema = JSON.parse(file.text);
+    } catch (err) {
+      throw new DocumentPoliciesConfigError(
+        `policy "${name}" outputSchema at "${file.path}" is not valid JSON: ${(err as Error).message}`,
+        file.path,
+      );
+    }
+    if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+      throw new DocumentPoliciesConfigError(
+        `policy "${name}" outputSchema at "${file.path}" must be a JSON object.`,
+        file.path,
+      );
+    }
+    policy.outputSchema = { path: file.path, schema: schema as Record<string, unknown>, contentHash: sha256(file.text) };
+  }
+
+  if (fm.examples) {
+    const examples: NonNullable<LoadedPolicy["examples"]> = [];
+    for (const relative of fm.examples) {
+      const file = readReferenced(relative, `example "${relative}"`);
+      if (!file) return null;
+      examples.push({ path: file.path, text: file.text, contentHash: sha256(file.text) });
+    }
+    policy.examples = examples;
+  }
+
+  return policy;
 }
 
 /**
