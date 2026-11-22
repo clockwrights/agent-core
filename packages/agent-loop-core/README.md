@@ -25,6 +25,8 @@ Dependencies pulled in transitively: `@modelcontextprotocol/sdk` (for MCP), `typ
 import {
   // generic tool-agent loop (single + retry pass)
   runToolAgentLoop,
+  createRuntimeToolLlmAdapter,
+  type RuntimeToolLlmAdapterOptions,
   type ToolAgentLoopInput,
   type ToolAgentLoopRetry,
 
@@ -37,6 +39,7 @@ import {
   // LLM adapter contract consumed by the loops
   type ToolLlmAdapter,
   type ToolAgentInput,
+  type ToolAgentLimits,
   type ToolAgentOutput,
 
   // runtime context, prompts, prompt utilities
@@ -91,16 +94,72 @@ A thin retry layer over a `ToolLlmAdapter`. You provide the adapter, system + us
 1. calls `llm.runToolAgent({...})` once,
 2. if `retry.shouldRetry(output)` is true, builds an appended prompt from `retry.buildRetryPrompt()` and calls the adapter again with a derived session id.
 
+Run limits (`maxTurns`, `maxToolCalls`, `budget`, `toolTimeoutMs`, `maxParallelTools`), `onEvent`, `model` and `reasoning` set on the loop input are forwarded to the adapter on both passes. Fields you leave unset are not added to the adapter input.
+
 The adapter — not this package — owns the actual conversation. See `ToolLlmAdapter`:
 
 ```ts
 interface ToolLlmAdapter {
   runToolAgent(input: ToolAgentInput): Promise<ToolAgentOutput | undefined>;
-  metadata(): { enabled: boolean };
+  metadata(): { enabled: boolean; supports?: { limits?: boolean; usage?: boolean; events?: boolean; modelSelection?: boolean } };
+}
+
+interface ToolAgentInput extends ToolAgentLimits {
+  systemPrompt: string; prompt: string; sessionId: string; tools: AgentTool<any>[];
+  maxTokens?: number; onProgress?: (message: string) => void;
+  model?: string;                                // selector the adapter interprets (llm-profiles profile/component, model id)
+  reasoning?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  images?: ToolAgentImage[]; signal?: AbortSignal;
+  onEvent?: (event: AgentEvent) => void;          // raw runtime events
+}
+
+interface ToolAgentLimits {                        // same meaning as in tool-agent-runtime
+  maxTurns?: number; maxToolCalls?: number;
+  budget?: { maxTotalTokens?: number; maxCostUsd?: number };
+  toolTimeoutMs?: number; maxParallelTools?: number;
+}
+
+interface ToolAgentOutput {
+  text: string;
+  toolCalls: Array<{ name: string; args: unknown; isError: boolean }>;
+  usage?: AgentUsage;          // tokens + USD cost, summed over the run
+  endReason?: AgentEndReason;  // completed | terminated | max_turns | max_tool_calls | budget | stop_condition | aborted | error
+  errorMessage?: string;
+  turns?: number;
 }
 ```
 
-A reference adapter that wraps `@maya-ai/tool-agent-runtime` is straightforward to build (translate `ToolAgentInput` → `ToolAgentRunInput`, collect events, return `{ text, toolCalls }`).
+All fields after the original ones are optional, so existing adapters keep working. An adapter that cannot honour limits, report usage or forward events MAY ignore those fields and SHOULD say so through `metadata().supports` (omitting a flag means "not supported").
+
+#### Reference adapter: `createRuntimeToolLlmAdapter`
+
+A ready-made adapter over `@maya-ai/tool-agent-runtime`, so you don't have to write one:
+
+```ts
+const llm = createRuntimeToolLlmAdapter({
+  model,                                  // a pi-ai Model, or (input) => Model to choose per call
+  apiKey: process.env.OPENAI_API_KEY,
+  reasoning: "medium",
+  defaults: { maxTurns: 25, toolTimeoutMs: 60_000 }, // used when a call leaves a field unset
+});
+
+const output = await runToolAgentLoop({ llm, systemPrompt, prompt, sessionId, tools, maxToolCalls: 40 });
+output?.endReason; // e.g. "completed" or "max_tool_calls"
+output?.usage;     // tokens and cost
+```
+
+- Forwards prompt, tools, images, signal, session id, `maxTokens` and every limit; `defaults` fill unset fields.
+- **Turn cap on by default:** runs stop after `DEFAULT_ADAPTER_MAX_TURNS` (50) model calls with `endReason: "max_turns"`, so a model stuck in a tool loop cannot run forever. Set `defaults.maxTurns` to change it, pass `maxTurns` per call, or use `defaults: { maxTurns: undefined }` for no cap. (The bare `runToolAgent` has no default cap.)
+- `text` is the text of the **last** assistant message (not intermediate "let me check…" turns).
+- `toolCalls` lists every call in call order, including failed, timed-out and limit-blocked calls (`isError: true`).
+- `usage`, `endReason`, `errorMessage` and `turns` come from the run.
+- `onEvent` gets every runtime event; if it throws, the run continues, the error is reported once with `console.warn`, and no further events are forwarded for that run.
+- `onProgress` gets `Running <tool label>` when a tool starts (override with `toolProgressMessage`, return `undefined` to silence).
+- Errors thrown by the runtime (such as invalid limits) propagate to the caller.
+- **Model selection:** with a fixed `model`, `input.model` is ignored (`supports.modelSelection: false`). Pass a function to route on it — for example `model: (input) => modelsBySelector[input.model ?? "default"]`, where you build `modelsBySelector` from your llm-profiles config (an llm-profiles router whose factory returns pi-ai models works the same way: `(input) => router.forComponent(input.model ?? "main-agent")`).
+- `input.reasoning` overrides the adapter's `reasoning` for that call; `"off"` disables extended thinking.
+- `prepareStep` (adapter option) is passed to every run — for example `createToolResultClearing()` (below).
+- `metadata()` returns `{ enabled: true, supports: { limits: true, usage: true, events: true, modelSelection } }`, where `modelSelection` is true for the function form of `model`.
 
 ### `runDocumentAgentLoop({ llm, adapter, createRuntimeContext?, onProgress? })`
 
@@ -149,6 +208,58 @@ Default policy:
 ```
 
 `ToolRegistry` accumulates `RegisteredTool[]` (an `AgentTool` + `{ source, risk }`); `resolve(policy)` returns the filtered list to hand to the LLM. The allow/deny lists are applied after source gates; an empty `allow` means "no name-level filter".
+
+### Tool result size limits
+
+Large tool outputs crowd the context window. `limitToolResult(tool, { maxChars, store? })` wraps a tool so the text of each result is capped at `maxChars` characters (text parts kept in order until the budget is used; images pass through). A truncated result ends with a notice telling the model how much it is seeing, and its `details` gain `truncation: { truncated, totalChars, shownChars, outputId? }`. Results within the limit are returned unchanged.
+
+With a `store` (`createToolOutputStore({ maxEntries? })`, in-memory, oldest evicted first), the full text is kept under the tool call id and the notice tells the model to call `read_tool_output` with `{ id, offset }`. Register that tool from `createReadToolOutputTool(store)` (risk `read`) so the model can page through the rest.
+
+Through the registry, set `maxResultChars` in a tool's metadata and opt in at resolve time:
+
+```ts
+const store = createToolOutputStore();
+registry.register(createReadToolOutputTool(store), { source: "system", risk: "read" });
+registry.register(searchTool, { source: "domain", risk: "read", maxResultChars: 8_000 });
+
+const tools = registry.resolve(policy, { resultLimits: { defaultMaxChars: 20_000, store } });
+```
+
+Without `resultLimits`, `resolve()` returns tools exactly as registered. A tool's `maxResultChars` wins over `defaultMaxChars`; a tool with neither is not wrapped.
+
+### Parallelism from risk
+
+`resolve(policy, { executionModeFromRisk: true })` sets each tool's `executionMode` from its registered risk — `read` → `"parallel"`, `write` / `external` → `"sequential"` (`executionModeForRisk(risk)`) — overriding the tool's own setting. The built-in memory, wiki-lint and skill readers are hard-coded `sequential`; with this option they run as reads. Pair it with the runtime's `toolBatchStrategy: "sequential-barriers"` so read tools in a batch run concurrently while each write or external tool runs alone:
+
+```ts
+const tools = registry.resolve(policy, { executionModeFromRisk: true });
+await runToolAgent({ …, tools, toolBatchStrategy: "sequential-barriers" }, emit);
+```
+
+Without the option, tools keep their own `executionMode`.
+
+### Clearing stale tool results
+
+Long runs accumulate tool output the model no longer needs. `createToolResultClearing(options?)` returns a `prepareStep` hook (see tool-agent-runtime) that replaces old tool results with short stubs in what the model sees; the run's transcript is unchanged.
+
+```ts
+const store = createToolOutputStore();
+const llm = createRuntimeToolLlmAdapter({
+  model,
+  prepareStep: createToolResultClearing({ keepRecentTurns: 3, batchTurns: 5, store }),
+});
+// also register createReadToolOutputTool(store) so the model can read a cleared result again
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `keepRecentTurns` | `3` | The newest N tool-calling turns are never cleared. |
+| `batchTurns` | `5` | The clearing boundary moves in steps of this many turns, so the prompt prefix stays identical between steps and the provider's prompt cache keeps hitting. `1` clears as soon as a turn ages out. |
+| `minChars` | `200` | Shorter text results are kept. |
+| `excludeTools` | `DEFAULT_CLEARING_EXCLUDED_TOOLS` (`memory_search`, `memory_get`, `read_skill`) | Never cleared. |
+| `store` | none | Keep the full text of cleared results; the stub then tells the model to call `read_tool_output` with the id. |
+
+Error results are always kept. Cleared results lose their image parts too (the stub says so). Off unless you pass the hook: nothing is cleared by default.
 
 ## Runtime context and capability assembly
 

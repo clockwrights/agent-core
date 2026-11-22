@@ -40,21 +40,52 @@ export type {
   ToolAgentLoopProgressMessages,
   ToolAgentLoopRetry
 } from "./toolAgentLoop.js";
+export {
+  createRuntimeToolLlmAdapter,
+  DEFAULT_ADAPTER_MAX_TURNS
+} from "./runtimeToolLlmAdapter.js";
+export {
+  createToolResultClearing,
+  DEFAULT_CLEARING_EXCLUDED_TOOLS
+} from "./toolResultClearing.js";
+export type {
+  ToolResultClearingOptions
+} from "./toolResultClearing.js";
+export type {
+  RuntimeToolLlmAdapterOptions
+} from "./runtimeToolLlmAdapter.js";
 export type {
   ToolAgentImage,
   ToolAgentInput,
+  ToolAgentLimits,
   ToolAgentOutput,
+  ToolAgentReasoningLevel,
   ToolAgentRuntimeMetadata,
   ToolLlmAdapter
 } from "./toolAgentTypes.js";
 export {
   defaultToolPolicy,
+  executionModeForRisk,
   isToolAllowed,
   resolveTools,
   ToolRegistry
 } from "./toolRegistry.js";
+export {
+  createReadToolOutputTool,
+  createToolOutputStore,
+  limitToolResult,
+  readToolOutputToolName
+} from "./toolResultLimits.js";
+export type {
+  ReadToolOutputDetails,
+  ToolOutputStore,
+  ToolOutputStoreOptions,
+  ToolResultLimitOptions,
+  ToolResultTruncation
+} from "./toolResultLimits.js";
 export type {
   RegisteredTool,
+  ResolveToolsOptions,
   ToolMetadata,
   ToolPolicy,
   ToolRisk,
