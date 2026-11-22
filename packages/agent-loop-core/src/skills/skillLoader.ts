@@ -45,7 +45,17 @@ export async function loadSkills(config: SkillConfig): Promise<LoadSkillsResult>
         maxSkillFileBytes: config.maxSkillFileBytes ?? defaultMaxSkillFileBytes,
         diagnostics
       });
-      if (skill) skills.push(skill);
+      if (!skill) continue;
+      const problems = validateSkillEntry(skill);
+      for (const problem of problems) {
+        diagnostics.push({
+          level: config.strictValidation ? "error" : "warning",
+          filePath: skill.filePath,
+          message: config.strictValidation ? `${problem} Skill skipped (strictValidation).` : problem
+        });
+      }
+      if (problems.length > 0 && config.strictValidation) continue;
+      skills.push(skill);
     }
   }
 
@@ -141,13 +151,57 @@ async function loadSkillFile(input: {
     return undefined;
   }
 
+  const optional = (key: string) => {
+    const value = parsed.frontmatter[key]?.trim();
+    return value ? value : undefined;
+  };
+  const allowedTools = optional("allowed-tools")?.split(/\s+/).filter(Boolean);
+  const license = optional("license");
+  const compatibility = optional("compatibility");
+
   return {
     name,
     description,
     filePath,
     sourceRoot,
-    body: parsed.body.trim()
+    directory: path.dirname(filePath),
+    body: parsed.body.trim(),
+    ...(license ? { license } : {}),
+    ...(compatibility ? { compatibility } : {}),
+    ...(allowedTools && allowedTools.length > 0 ? { allowedTools } : {})
   };
+}
+
+/** Agent Skills naming rules: 1–64 chars, lowercase letters/digits/hyphens, no leading, trailing or double hyphens. */
+const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const MAX_SKILL_NAME_CHARS = 64;
+const MAX_SKILL_DESCRIPTION_CHARS = 1024;
+const MAX_SKILL_COMPATIBILITY_CHARS = 500;
+
+/** Problems with a skill under the Agent Skills specification (empty when valid). */
+export function validateSkillEntry(
+  skill: Pick<SkillEntry, "name" | "description" | "filePath" | "directory" | "compatibility">
+): string[] {
+  const problems: string[] = [];
+  if (skill.name.length > MAX_SKILL_NAME_CHARS) {
+    problems.push(`Skill name "${skill.name}" is longer than ${MAX_SKILL_NAME_CHARS} characters.`);
+  }
+  if (!SKILL_NAME_RE.test(skill.name)) {
+    problems.push(
+      `Skill name "${skill.name}" must use only lowercase letters, digits and single hyphens (not at the start or end).`
+    );
+  }
+  const folder = path.basename(skill.directory ?? path.dirname(skill.filePath));
+  if (folder !== skill.name) {
+    problems.push(`Skill name "${skill.name}" does not match its folder name "${folder}".`);
+  }
+  if (skill.description.length > MAX_SKILL_DESCRIPTION_CHARS) {
+    problems.push(`Skill description is longer than ${MAX_SKILL_DESCRIPTION_CHARS} characters (${skill.description.length}).`);
+  }
+  if (skill.compatibility && skill.compatibility.length > MAX_SKILL_COMPATIBILITY_CHARS) {
+    problems.push(`Skill compatibility field is longer than ${MAX_SKILL_COMPATIBILITY_CHARS} characters.`);
+  }
+  return problems;
 }
 
 function parseSkillFile(content: string): ParsedSkillFile | undefined {

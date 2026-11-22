@@ -315,16 +315,28 @@ Skills are tiny `SKILL.md` files describing a reusable procedure. `loadSkills` s
 
 ```md
 ---
-name: review_package
+name: review-package
 description: Review a documentation package for completeness.
+license: MIT                      # optional
+allowed-tools: read_skill_file    # optional, space-separated (informational for now)
 ---
 
 Step-by-step instructions for the model…
 ```
 
-Required frontmatter keys: `name`, `description`. Files larger than `maxSkillFileBytes` (default 128 KB) are skipped with a diagnostic.
+Required frontmatter keys: `name`, `description`. Optional keys `license`, `compatibility` and `allowed-tools` are parsed onto the entry (`allowedTools` as a list); each entry also records its folder as `directory`. Files larger than `maxSkillFileBytes` (default 128 KB) are skipped with a diagnostic.
+
+Names are checked against the [Agent Skills](https://agentskills.io/specification) rules: 1–64 characters, lowercase letters, digits and single hyphens (not at the start or end), matching the skill's folder name; descriptions up to 1,024 characters. Violations are reported as `warning` diagnostics and the skill still loads; set `strictValidation: true` to skip such skills instead. `validateSkillEntry(entry)` exposes the same checks.
 
 `formatSkillsForPrompt(skills)` produces a compact XML-style block (name, description, file path — *not* the body), capped at `maxPromptChars` (default 12 000). The body is loaded into memory only — exposed through the `read_skill` tool registered by `createSkillToolDefinitions(skills)`. `read_skill` accepts either `name` or `filePath` and returns the full body; it has no arbitrary filesystem access.
+
+**Bundled files (opt-in).** Skills can ship extra files next to `SKILL.md` — `scripts/`, `references/`, `assets/`. With `fileAccess: true` in the skills config (or `createSkillToolDefinitions(skills, { fileAccess: true })`), a second tool, `read_skill_file`, is registered (risk `read`) and the skills prompt mentions it:
+
+- `{ skill }` lists the skill's files (up to 3 levels, 200 entries); `{ skill, path }` reads a file or lists a sub-folder.
+- Paths are relative to the skill's folder. Absolute paths, `..` escapes and links that resolve outside the folder are rejected.
+- Binary files and files above `maxResourceBytes` (default 256 KiB) are refused with an error the model can see.
+
+Without `fileAccess`, only `read_skill` is registered, as before.
 
 The convenience wrapper `createSkillsRuntimeContext(config)` ties the loader and prompt formatter together.
 

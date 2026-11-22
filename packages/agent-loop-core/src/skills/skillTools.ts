@@ -1,6 +1,7 @@
 import type { AgentTool, AgentToolResult } from "@maya-ai/tool-agent-runtime";
 import { Type } from "typebox";
 import type { RegisteredTool } from "../toolRegistry.js";
+import { createReadSkillFileTool } from "./skillFileTool.js";
 import type { SkillEntry } from "./skillTypes.js";
 
 export interface ReadSkillDetails {
@@ -15,10 +16,17 @@ interface ReadSkillInput {
   filePath?: string;
 }
 
-export function createSkillToolDefinitions(skills: SkillEntry[]): RegisteredTool[] {
+export interface SkillToolOptions {
+  /** Also register `read_skill_file` (scoped access to bundled files). Default false. */
+  fileAccess?: boolean;
+  /** Size limit for `read_skill_file`. Default 256 KiB. */
+  maxResourceBytes?: number;
+}
+
+export function createSkillToolDefinitions(skills: SkillEntry[], options: SkillToolOptions = {}): RegisteredTool[] {
   if (!skills.length) return [];
 
-  return [
+  const definitions: RegisteredTool[] = [
     {
       tool: createReadSkillTool(skills),
       metadata: {
@@ -27,6 +35,13 @@ export function createSkillToolDefinitions(skills: SkillEntry[]): RegisteredTool
       }
     }
   ];
+  if (options.fileAccess) {
+    definitions.push({
+      tool: createReadSkillFileTool(skills, { maxResourceBytes: options.maxResourceBytes }),
+      metadata: { source: "system", risk: "read" }
+    });
+  }
+  return definitions;
 }
 
 function createReadSkillTool(skills: SkillEntry[]): AgentTool<any, ReadSkillDetails> {

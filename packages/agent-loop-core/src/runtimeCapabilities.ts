@@ -66,7 +66,10 @@ export async function createAgentRuntimeContextFromConfig(config: AgentRuntimeCa
 
   const skillsContext = await createSkillsRuntimeContext(config.skills ?? { enabled: false, roots: [] });
   diagnostics.push(...skillsContext.diagnostics.map((diagnostic) => ({ ...diagnostic, source: "skills" as const })));
-  const skillToolDefinitions = createSkillToolDefinitions(skillsContext.skills);
+  const skillToolDefinitions = createSkillToolDefinitions(skillsContext.skills, {
+    fileAccess: config.skills?.fileAccess,
+    maxResourceBytes: config.skills?.maxResourceBytes
+  });
 
   return {
     toolDefinitions: [...mcpToolDefinitions, ...memoryContext.toolDefinitions, ...skillToolDefinitions],

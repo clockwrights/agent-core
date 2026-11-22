@@ -3,6 +3,8 @@ import type { SkillEntry, SkillsRuntimeContext } from "./skillTypes.js";
 export interface FormatSkillsPromptOptions {
   maxPromptChars?: number;
   readToolName?: string;
+  /** When set, the prompt tells the model it can list/read bundled skill files with this tool. */
+  fileToolName?: string;
 }
 
 const defaultMaxPromptChars = 12_000;
@@ -16,6 +18,9 @@ export function formatSkillsForPrompt(skills: SkillEntry[], options: FormatSkill
     "<skills>",
     "Available skills are reusable procedures. Use a skill only when it is relevant to the user's request.",
     `If you need full instructions, call ${readToolName} with the skill name or listed file path.`,
+    ...(options.fileToolName
+      ? [`Skills may bundle extra files (scripts, references, assets); list or read them with ${options.fileToolName}.`]
+      : []),
     ""
   ].join("\n");
   const footer = "\n</skills>";

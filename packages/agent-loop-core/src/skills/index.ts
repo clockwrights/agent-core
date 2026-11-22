@@ -1,6 +1,15 @@
 export {
-  loadSkills
+  loadSkills,
+  validateSkillEntry
 } from "./skillLoader.js";
+export {
+  createReadSkillFileTool,
+  readSkillFileToolName
+} from "./skillFileTool.js";
+export type {
+  ReadSkillFileDetails,
+  ReadSkillFileToolOptions
+} from "./skillFileTool.js";
 export {
   appendSkillsPromptToSystemPrompt,
   formatSkillsForPrompt
@@ -15,7 +24,8 @@ export {
   createSkillToolDefinitions
 } from "./skillTools.js";
 export type {
-  ReadSkillDetails
+  ReadSkillDetails,
+  SkillToolOptions
 } from "./skillTools.js";
 export type {
   LoadSkillsResult,
