@@ -1,8 +1,10 @@
 import type {
   AgentEndReason,
   AgentEvent,
+  AgentMessage,
   AgentTool,
   AgentUsage,
+  RunState,
   ToolAgentBudget
 } from "@maya-ai/tool-agent-runtime";
 
@@ -15,12 +17,14 @@ export interface ToolAgentRuntimeMetadata {
    * - `usage`: `usage`, `endReason`, `errorMessage`, `turns` on the output
    * - `events`: `onEvent` receives the runtime's raw events
    * - `modelSelection`: `model` on the input picks the model for that call
+   * - `runState`: `messages` / `resumeFrom` on the input and `state` on the output
    */
   supports?: {
     limits?: boolean;
     usage?: boolean;
     events?: boolean;
     modelSelection?: boolean;
+    runState?: boolean;
   };
 }
 
@@ -101,6 +105,19 @@ export interface ToolAgentInput extends ToolAgentLimits {
    * SHOULD report `supports.events: false` (or omit it).
    */
   onEvent?: (event: AgentEvent) => void;
+  /**
+   * Prior conversation; the run continues from it. With `messages` or
+   * `resumeFrom`, `prompt` is the new user turn, and an empty `prompt` ("")
+   * means no new turn. Adapters that cannot honour it SHOULD report
+   * `supports.runState: false` (or omit it).
+   */
+  messages?: AgentMessage[];
+  /**
+   * Continue from a saved `RunState` (from a previous output's `state`):
+   * transcript, counters and usage carry over, so limits count across calls.
+   * Not combinable with `messages`.
+   */
+  resumeFrom?: RunState;
 }
 
 export interface ToolAgentOutput {
@@ -118,4 +135,6 @@ export interface ToolAgentOutput {
   errorMessage?: string;
   /** Number of model calls made. */
   turns?: number;
+  /** Serializable state of the run; pass as `resumeFrom` to continue. */
+  state?: RunState;
 }

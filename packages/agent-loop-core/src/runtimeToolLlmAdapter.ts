@@ -57,7 +57,11 @@ export interface RuntimeToolLlmAdapterOptions {
  * - Output: `text` is the text of the last assistant message; `toolCalls`
  *   lists every executed or rejected call in call order (errors, timeouts and
  *   calls blocked by `maxToolCalls` have `isError: true`); `usage`, `endReason`,
- *   `errorMessage` and `turns` come from the run.
+ *   `errorMessage` and `turns` come from the run; `state` is the run's
+ *   serializable state (pass it back as `resumeFrom`). `turns` counts this
+ *   call's model calls; `state.turns` counts the whole run.
+ * - `messages` / `resumeFrom` are forwarded; with either, an empty `prompt`
+ *   means no new user turn.
  * - Errors thrown by the runtime (for example invalid limits) propagate.
  */
 /** Turn cap the reference adapter applies when neither the call nor `defaults` sets one. */
@@ -74,7 +78,13 @@ export function createRuntimeToolLlmAdapter(options: RuntimeToolLlmAdapterOption
   return {
     metadata: () => ({
       enabled: true,
-      supports: { limits: true, usage: true, events: true, modelSelection: typeof options.model === "function" }
+      supports: {
+        limits: true,
+        usage: true,
+        events: true,
+        modelSelection: typeof options.model === "function",
+        runState: true
+      }
     }),
 
     async runToolAgent(input: ToolAgentInput): Promise<ToolAgentOutput> {
@@ -122,13 +132,19 @@ export function createRuntimeToolLlmAdapter(options: RuntimeToolLlmAdapterOption
         }
       };
 
+      // With a prior conversation, an empty prompt means "no new user turn".
+      const continuing = input.messages !== undefined || input.resumeFrom !== undefined;
+      const prompt = continuing && input.prompt === "" ? undefined : input.prompt;
+
       await runToolAgent(
         {
           systemPrompt: input.systemPrompt,
           model,
           reasoning: resolveReasoning(input.reasoning, options.reasoning),
           tools: input.tools,
-          prompt: input.prompt,
+          ...(prompt !== undefined ? { prompt } : {}),
+          ...(input.messages !== undefined ? { messages: input.messages } : {}),
+          ...(input.resumeFrom !== undefined ? { resumeFrom: input.resumeFrom } : {}),
           images: input.images?.map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType })),
           signal: input.signal,
           apiKey: options.apiKey,
@@ -152,7 +168,10 @@ export function createRuntimeToolLlmAdapter(options: RuntimeToolLlmAdapterOption
         ...(finished?.usage ? { usage: finished.usage } : {}),
         ...(finished?.reason ? { endReason: finished.reason } : {}),
         ...(finished?.errorMessage !== undefined ? { errorMessage: finished.errorMessage } : {}),
-        turns
+        // A resumed run's pending batch emits a turn_end without a model call,
+        // so derive this call's model calls from the state when it is there.
+        turns: finished?.state ? finished.state.turns - (input.resumeFrom?.turns ?? 0) : turns,
+        ...(finished?.state ? { state: finished.state } : {})
       };
     }
   };

@@ -77,7 +77,7 @@ test("metadata reports full support", () => {
   const adapter = adapterFor(script());
   assert.deepEqual(adapter.metadata(), {
     enabled: true,
-    supports: { limits: true, usage: true, events: true, modelSelection: false }
+    supports: { limits: true, usage: true, events: true, modelSelection: false, runState: true }
   });
   const routed = createRuntimeToolLlmAdapter({ model: () => script().model });
   assert.equal(routed.metadata().supports?.modelSelection, true, "function form can honour input.model");
@@ -406,4 +406,50 @@ test("built-in cap: defaults.maxTurns replaces it; { maxTurns: undefined } remov
 
   const perCall = script(...loopForever(4));
   assert.equal((await adapterFor(perCall).runToolAgent(baseInput({ maxTurns: 2 })))?.turns, 2);
+});
+
+// ---------------------------------------------------------------------------
+// Run state: messages, resumeFrom, state
+// ---------------------------------------------------------------------------
+
+test("run state: output carries state; resumeFrom continues; empty prompt means no new turn", async () => {
+  const replay = script(
+    replyToolCalls([{ name: "echo", arguments: { message: "hi" }, id: "a" }], { usage: { totalTokens: 10 } }),
+    replyText("first", { usage: { totalTokens: 10 } }),
+    replyText("second", { usage: { totalTokens: 10 } })
+  );
+  const adapter = adapterFor(replay);
+  const first = (await adapter.runToolAgent(baseInput())) as ToolAgentOutput;
+  assert.equal(first.state?.turns, 2);
+  assert.equal(first.state?.toolCallsExecuted, 1);
+
+  const second = (await adapter.runToolAgent(
+    baseInput({ prompt: "and now?", resumeFrom: first.state!, maxTurns: 3 })
+  )) as ToolAgentOutput;
+  assert.equal(second.text, "second");
+  assert.equal(second.turns, 1, "this call's model calls");
+  assert.equal(second.state?.turns, 3, "the whole run's model calls");
+  assert.equal(second.usage?.totalTokens, 30, "usage carries over");
+  assert.deepEqual(
+    replay.calls[2]!.messages.map((m) => m.role),
+    ["user", "assistant", "toolResult", "assistant", "user"]
+  );
+
+  const finished = (await adapter.runToolAgent(baseInput({ prompt: "", resumeFrom: second.state! }))) as ToolAgentOutput;
+  assert.equal(finished.endReason, "completed", "nothing new to answer: no model call");
+  assert.equal(finished.turns, 0);
+  assert.equal(replay.calls.length, 3);
+});
+
+test("run state: messages are forwarded; a resumed pending batch is not counted as a model call", async () => {
+  const replay = script(replyText("continued"));
+  const history = [
+    { role: "user" as const, content: "echo it", timestamp: 0 },
+    replyToolCalls([{ name: "echo", arguments: { message: "x" }, id: "p" }])
+  ];
+  const output = (await adapterFor(replay).runToolAgent(baseInput({ prompt: "", messages: history }))) as ToolAgentOutput;
+  assert.equal(output.text, "continued");
+  assert.deepEqual(output.toolCalls, [{ name: "echo", args: { message: "x" }, isError: false }]);
+  assert.equal(output.turns, 1);
+  assert.deepEqual(replay.calls[0]!.messages.map((m) => m.role), ["user", "assistant", "toolResult"]);
 });
