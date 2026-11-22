@@ -10,7 +10,7 @@
  */
 
 import { defaultToolPolicy, type ToolPolicy } from "@maya-ai/agent-loop-core";
-import type { ChildContextMode } from "./orchestrationTypes.js";
+import type { ChildContextMode, ChildThinkingLevel } from "./orchestrationTypes.js";
 
 // ---------------------------------------------------------------------------
 // Policy preset names
@@ -52,8 +52,6 @@ export interface OrchestrationPolicy {
   maxActiveChildrenPerParent: number;
   /** Default per-child timeout in milliseconds. */
   defaultChildTimeoutMs: number;
-  /** Default child token budget. Lower than parent on purpose. */
-  defaultChildTokenBudget: number;
   /** Default context-fork mode. Phase 1 default: "isolated". */
   defaultContextMode: ChildContextMode;
   /** Whether children may receive write-capable domain tools. Phase 1 default: false. */
@@ -80,13 +78,41 @@ export interface OrchestrationPolicy {
    * tool boundary.
    */
   maxBatchTasks: number;
+  /**
+   * Default `maxTurns` for child runs that do not set one. Optional; unset
+   * (the default) means children have no turn cap.
+   */
+  defaultChildMaxTurns?: number;
+  /**
+   * Model selector for children that set neither `request.model` nor
+   * `profile.model`. Optional; unset means children use the adapter's default
+   * (the parent's model).
+   */
+  defaultChildModel?: string;
+  /** Reasoning effort for children that set none. Optional; unset = adapter default. */
+  defaultChildThinkingLevel?: ChildThinkingLevel;
+}
+
+/**
+ * Resolve a child's model and reasoning effort:
+ * request > profile > policy default > parent (left unset → adapter default).
+ */
+export function resolveChildModel(
+  request: { model?: string; thinkingLevel?: ChildThinkingLevel; profile?: { model?: string; thinkingLevel?: ChildThinkingLevel } },
+  policy: Pick<OrchestrationPolicy, "defaultChildModel" | "defaultChildThinkingLevel">
+): { model?: string; thinkingLevel?: ChildThinkingLevel } {
+  const model = request.model ?? request.profile?.model ?? policy.defaultChildModel;
+  const thinkingLevel = request.thinkingLevel ?? request.profile?.thinkingLevel ?? policy.defaultChildThinkingLevel;
+  return {
+    ...(model !== undefined ? { model } : {}),
+    ...(thinkingLevel !== undefined ? { thinkingLevel } : {})
+  };
 }
 
 export const DEFAULT_ORCHESTRATION_POLICY: OrchestrationPolicy = {
   maxDepth: 1,
   maxActiveChildrenPerParent: 3,
   defaultChildTimeoutMs: 120_000,
-  defaultChildTokenBudget: 800,
   defaultContextMode: "isolated",
   defaultAllowWriteTools: false,
   defaultStateMutationMode: "proposal_only",

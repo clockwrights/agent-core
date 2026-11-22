@@ -138,6 +138,8 @@ export interface OrchestratorState {
 export interface ChildLifecycleCounts {
   total: number;
   completed: number;
+  /** Children stopped early by a run limit. */
+  partial: number;
   failed: number;
   timedOut: number;
   cancelled: number;
@@ -149,6 +151,7 @@ export function computeChildLifecycleCounts(
   const counts: ChildLifecycleCounts = {
     total: results.length,
     completed: 0,
+    partial: 0,
     failed: 0,
     timedOut: 0,
     cancelled: 0
@@ -157,6 +160,9 @@ export function computeChildLifecycleCounts(
     switch (r.status) {
       case "completed":
         counts.completed++;
+        break;
+      case "partial":
+        counts.partial++;
         break;
       case "failed":
         counts.failed++;
@@ -491,10 +497,13 @@ export async function runSynthesis(
  */
 function synthesisFallbackText(state: OrchestratorState, errorMessage: string): string {
   const successCount = state.childResults.filter((r) => r.status === "completed").length;
-  const failureCount = state.childResults.length - successCount;
+  const partialCount = state.childResults.filter((r) => r.status === "partial").length;
+  const failureCount = state.childResults.length - successCount - partialCount;
   const lines = [
     `Synthesis failed (${errorMessage}).`,
-    `Child runs: ${state.childResults.length} (${successCount} completed, ${failureCount} failed).`
+    `Child runs: ${state.childResults.length} (${successCount} completed, ` +
+      (partialCount > 0 ? `${partialCount} partial, ` : "") +
+      `${failureCount} failed).`
   ];
   for (const result of state.childResults) {
     lines.push(`- [${result.status}] ${result.label}: ${result.summary}`);

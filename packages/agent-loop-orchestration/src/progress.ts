@@ -32,6 +32,10 @@ export interface ChildCompletionMetrics {
    * confused into trusting it as a billing figure.
    */
   outputChars: number;
+  /** Total tokens of the child run, when the adapter reports usage. */
+  totalTokens?: number;
+  /** Cost of the child run in USD, when the adapter reports usage. */
+  costUsd?: number;
 }
 
 export interface ChildProgressReporter {
@@ -68,7 +72,10 @@ export function createChildProgressReporter(input: ChildProgressInput): ChildPro
     completed(metrics: ChildCompletionMetrics) {
       emit(
         `completed in ${metrics.durationMs}ms ` +
-          `(tools=${metrics.toolCallCount}, errors=${metrics.toolErrorCount}, chars=${metrics.outputChars})`
+          `(tools=${metrics.toolCallCount}, errors=${metrics.toolErrorCount}, chars=${metrics.outputChars}` +
+          (metrics.totalTokens !== undefined ? `, tokens=${metrics.totalTokens}` : "") +
+          (metrics.costUsd !== undefined ? `, cost=$${metrics.costUsd.toFixed(4)}` : "") +
+          ")"
       );
     },
     failed(reason: string) {

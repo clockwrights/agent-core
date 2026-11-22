@@ -201,6 +201,9 @@ interface ChildRunRequest {
   profile?: ChildExecutionProfile;
   maxTokens?: number;
   timeoutMs?: number;
+  maxTurns?: number;                      // model-call cap; falls back to policy.defaultChildMaxTurns
+  model?: string;                         // model selector for this child (see resolution order below)
+  thinkingLevel?: ChildThinkingLevel;     // reasoning effort for this child
   allowWriteTools?: boolean;
   idempotencyKey?: string;
   metadata?: Record<string, string>;
@@ -217,7 +220,7 @@ interface ChildRunResultEnvelope {
   runId: string;
   parentRunId: string;
   label: string;
-  status: "completed" | "failed" | "timed_out" | "cancelled";
+  status: "completed" | "partial" | "failed" | "timed_out" | "cancelled";
   summary: string;
   text?: string;
   evidence?: string[];
@@ -230,8 +233,23 @@ interface ChildRunResultEnvelope {
   startedAt: string;
   endedAt: string;
   durationMs: number;
+  usage?: AgentUsage;          // tokens + USD cost of the child run (when the adapter reports it)
+  endReason?: AgentEndReason;  // why the child's run ended (when the adapter reports it)
+  turns?: number;              // model calls made (when the adapter reports it)
+  model?: string;              // model selector the child ran with, after resolution
+  thinkingLevel?: ChildThinkingLevel;
 }
 ```
+
+Status from the adapter's `endReason` (adapters that report one, such as `createRuntimeToolLlmAdapter` from agent-loop-core):
+
+| `endReason` | `status` | Notes |
+|---|---|---|
+| `completed`, `terminated`, `stop_condition` | `completed` | |
+| `max_turns`, `max_tool_calls`, `budget` | `partial` | Text, tool calls and usage are kept; `warnings` names the limit. The child stopped early, so treat the result as possibly incomplete. |
+| `error` | `failed` | `failure: { code: "llm_error", retryable: true }`; text and tool calls are kept. |
+| `aborted` | `cancelled` | |
+| none (older adapters) | `completed` | Same as before. |
 
 ### `OrchestrationPolicy`
 
@@ -240,17 +258,23 @@ interface OrchestrationPolicy {
   maxDepth: number;                                    // Phase 1: 1
   maxActiveChildrenPerParent: number;                  // Phase 1: 3
   defaultChildTimeoutMs: number;                       // Phase 1: 120_000
-  defaultChildTokenBudget: number;                     // Phase 1: 800
   defaultContextMode: "isolated" | "fork";             // Phase 1: "isolated"
   defaultAllowWriteTools: boolean;                     // Phase 1: false
   defaultStateMutationMode: "proposal_only" | "direct_apply";  // Phase 1: "proposal_only"
   synthesisMode: "separate_call" | "inline_tool_result";       // Phase 1: "separate_call" only
   maxChildPromptChars: number;                         // Phase 1: 16_000
   maxChildTokens: number;                              // Phase 1: 4_000
+  defaultChildMaxTurns?: number;                       // optional; unset = no child turn cap
+  defaultChildModel?: string;                          // optional; unset = adapter default (parent model)
+  defaultChildThinkingLevel?: ChildThinkingLevel;      // optional
 }
 ```
 
+**Per-child model and reasoning.** Each is resolved independently, first match wins: `request.model` / `request.thinkingLevel` → `request.profile.model` / `profile.thinkingLevel` → `policy.defaultChildModel` / `defaultChildThinkingLevel` → unset, so the adapter uses its own default (the parent's model). `resolveChildModel(request, policy)` exposes the same logic. The resolved values are sent to the adapter as `model` / `reasoning` and recorded on the envelope. `model` is a selector the adapter interprets — typically an llm-profiles profile name or component id; the reference adapter honours it when its `model` option is a function (see agent-loop-core). The `delegate_task` / `delegate_tasks` tools do not let the model choose: LLM-delegated children get the policy defaults.
+
 `DEFAULT_ORCHESTRATION_POLICY` exposes the Phase 1 defaults; consumers override individual fields when needed.
+
+> **Removed:** `defaultChildTokenBudget` was never read by the executor and has been removed. To bound a child, use `maxTokens` (output tokens per model call, capped by `maxChildTokens`), `maxTurns` / `defaultChildMaxTurns`, and `timeoutMs`; real usage is reported on the envelope. Policy objects that still set it no longer type-check — delete the field.
 
 ---
 
@@ -274,6 +298,7 @@ Invalid transitions throw `OrchestratorPhaseTransitionError`. The `OrchestratorS
 
 ```
 pending → running → completed
+                  → partial
                   → failed
                   → timed_out
                   → cancelled
@@ -320,6 +345,7 @@ Sibling to `delegate_task` (singular). Same domain-neutral name shape, registere
 {
   "total": 3,
   "completed": 2,
+  "partial": 0,
   "failed": 1,
   "results": [
     { "index": 0, "runId": "...", "label": "alpha", "status": "completed", "summary": "...", "warnings": [] },
@@ -466,15 +492,18 @@ Phase messages emitted by `runOrchestrator` include:
 
 #### Per-child completion metrics
 
-On a successful child run the executor emits a single structured summary line:
+On a successful (or `partial`) child run the executor emits a single structured summary line:
 
 ```
-[child:<label>] completed in <ms>ms (tools=N, errors=M, chars=K)
+[child:<label>] completed in <ms>ms (tools=N, errors=M, chars=K[, tokens=T, cost=$C])
 ```
+
+A `partial` child is preceded by `[child:<label>] stopped early (<endReason>)`.
 
 - `tools` — total tool calls the child made (`envelope.toolCalls.length`).
 - `errors` — subset of those whose execution returned `isError: true`.
-- `chars` — length of the child's final text output. Reported as characters (not tokens) so callers don't trust it as a billing figure; it is a cheap proxy for output volume.
+- `chars` — length of the child's final text output, a cheap proxy for output volume.
+- `tokens`, `cost` — the child's real total tokens and USD cost (from `envelope.usage`), present only when the adapter reports usage. Use these, not `chars`, for billing.
 
 The counters are sourced from the `ChildRunResultEnvelope`, so the emitted line and the returned envelope can never disagree. Failure paths (`failed: …`, `timed out after <ms>ms`) intentionally do not include this structured suffix — observers can distinguish success from failure on the message prefix alone.
 
