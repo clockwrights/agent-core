@@ -77,7 +77,7 @@ test("metadata reports full support", () => {
   const adapter = adapterFor(script());
   assert.deepEqual(adapter.metadata(), {
     enabled: true,
-    supports: { limits: true, usage: true, events: true, modelSelection: false, runState: true }
+    supports: { limits: true, usage: true, events: true, modelSelection: false, runState: true, approvals: true }
   });
   const routed = createRuntimeToolLlmAdapter({ model: () => script().model });
   assert.equal(routed.metadata().supports?.modelSelection, true, "function form can honour input.model");
@@ -452,4 +452,44 @@ test("run state: messages are forwarded; a resumed pending batch is not counted 
   assert.deepEqual(output.toolCalls, [{ name: "echo", args: { message: "x" }, isError: false }]);
   assert.equal(output.turns, 1);
   assert.deepEqual(replay.calls[0]!.messages.map((m) => m.role), ["user", "assistant", "toolResult"]);
+});
+
+// ---------------------------------------------------------------------------
+// Approval hooks
+// ---------------------------------------------------------------------------
+
+test("approvals: hooks are forwarded; an ask returns interruptions; approvals resume the run", async () => {
+  const replay = script(replyToolCalls([{ name: "echo", arguments: { message: "hi" }, id: "e" }]), replyText("done"));
+  const adapter = adapterFor(replay);
+  const beforeToolCall = () => ({ action: "ask" as const, reason: "check" });
+  const after: string[] = [];
+  const afterToolCall = ({ toolCall }: { toolCall: { name: string } }) => {
+    after.push(toolCall.name);
+    return { content: [{ type: "text" as const, text: "[filtered]" }] };
+  };
+
+  const paused = (await adapter.runToolAgent(baseInput({ beforeToolCall, afterToolCall }))) as ToolAgentOutput;
+  assert.equal(paused.endReason, "interrupted");
+  assert.deepEqual(paused.interruptions?.map((i) => [i.toolCallId, i.toolName, i.reason]), [["e", "echo", "check"]]);
+  assert.deepEqual(paused.toolCalls, [], "nothing ran");
+
+  const resumed = (await adapter.runToolAgent(
+    baseInput({ prompt: "", resumeFrom: paused.state!, beforeToolCall, afterToolCall, approvals: { e: { approve: true } } })
+  )) as ToolAgentOutput;
+  assert.equal(resumed.endReason, "completed");
+  assert.equal(resumed.text, "done");
+  assert.deepEqual(resumed.toolCalls, [{ name: "echo", args: { message: "hi" }, isError: false }]);
+  assert.deepEqual(after, ["echo"]);
+  assert.equal(resumed.interruptions, undefined);
+  const toolResult = replay.calls[1]!.messages.find((m) => m.role === "toolResult");
+  assert.deepEqual(toolResult?.role === "toolResult" ? toolResult.content : undefined, [{ type: "text", text: "[filtered]" }]);
+});
+
+test("approvals: a denied call is reported as an error tool call", async () => {
+  const replay = script(replyToolCalls([{ name: "echo", arguments: { message: "x" }, id: "e" }]), replyText("ok"));
+  const output = (await adapterFor(replay).runToolAgent(
+    baseInput({ beforeToolCall: () => ({ action: "deny" as const, message: "no" }) })
+  )) as ToolAgentOutput;
+  assert.deepEqual(output.toolCalls, [{ name: "echo", args: { message: "x" }, isError: true }]);
+  assert.equal(output.endReason, "completed");
 });

@@ -24,13 +24,17 @@ import type {
 
 const SUMMARY_MAX_CHARS = 500;
 
-/** End reasons meaning "stopped early by a run limit" → status `partial`. */
-const PARTIAL_END_REASONS = new Set(["max_turns", "max_tool_calls", "budget"]);
+/**
+ * End reasons meaning "stopped early" → status `partial`: a run limit, or a
+ * tool call waiting for approval (`interrupted`).
+ */
+const PARTIAL_END_REASONS = new Set(["max_turns", "max_tool_calls", "budget", "interrupted"]);
 
 /**
  * Project an adapter output onto a result envelope. The status follows the
  * adapter's `endReason` when it reports one:
- * - limit reasons (`max_turns`, `max_tool_calls`, `budget`) → `partial`
+ * - limit reasons (`max_turns`, `max_tool_calls`, `budget`) and `interrupted`
+ *   (waiting for tool approval; `interruptions` kept) → `partial`
  * - `error` → `failed` (code `llm_error`, retryable)
  * - `aborted` → `cancelled`
  * - anything else, or no end reason (older adapters) → `completed`
@@ -55,7 +59,11 @@ export function toChildRunResultEnvelope(input: {
   const warnings: string[] = [];
   if (endReason && PARTIAL_END_REASONS.has(endReason)) {
     status = "partial";
-    warnings.push(`Child stopped early (${endReason}); the result may be incomplete.`);
+    warnings.push(
+      endReason === "interrupted"
+        ? `Child stopped to wait for approval of ${output?.interruptions?.length ?? 0} tool call(s); the result may be incomplete.`
+        : `Child stopped early (${endReason}); the result may be incomplete.`
+    );
   } else if (endReason === "error") {
     status = "failed";
     failure = { code: "llm_error", message: output?.errorMessage ?? "Model call failed", retryable: true };
@@ -80,7 +88,8 @@ export function toChildRunResultEnvelope(input: {
     idempotencyKey: input.request.idempotencyKey,
     ...(output?.usage ? { usage: output.usage } : {}),
     ...(endReason ? { endReason } : {}),
-    ...(output?.turns !== undefined ? { turns: output.turns } : {})
+    ...(output?.turns !== undefined ? { turns: output.turns } : {}),
+    ...(output?.interruptions?.length ? { interruptions: output.interruptions } : {})
     // proposedChanges intentionally omitted in Phase 1 (see ChildRunResultEnvelope JSDoc).
   };
 }

@@ -113,6 +113,8 @@ interface ToolAgentInput extends ToolAgentLimits {
   onEvent?: (event: AgentEvent) => void;          // raw runtime events
   messages?: AgentMessage[];                      // prior conversation; with it, prompt "" = no new turn
   resumeFrom?: RunState;                          // continue a saved run (see tool-agent-runtime)
+  beforeToolCall?; afterToolCall?;               // tool approval hooks (see tool-agent-runtime)
+  approvals?: Record<string, ToolApproval>;       // decisions for resumeFrom's interrupted calls
 }
 
 interface ToolAgentLimits {                        // same meaning as in tool-agent-runtime
@@ -129,6 +131,7 @@ interface ToolAgentOutput {
   errorMessage?: string;
   turns?: number;              // model calls made by this call
   state?: RunState;            // serializable run state; pass back as resumeFrom
+  interruptions?: ToolInterruption[]; // calls waiting for approval when endReason is "interrupted"
 }
 ```
 
@@ -157,13 +160,14 @@ output?.usage;     // tokens and cost
 - `toolCalls` lists every call in call order, including failed, timed-out and limit-blocked calls (`isError: true`).
 - `usage`, `endReason`, `errorMessage` and `turns` come from the run; `state` is the run's serializable state.
 - **Conversations and resume:** `messages` and `resumeFrom` are forwarded to the runtime. With either, `prompt` is the new user turn and an empty `prompt` means none. `turns` counts this call's model calls (a resumed run's pending tool batch is not one); `state.turns` counts the whole run, and limits count the whole run too. See tool-agent-runtime's "Conversations, saved state and resume".
+- **Tool approval:** `beforeToolCall`, `afterToolCall` and `approvals` are forwarded. An "ask" ends the call with `endReason: "interrupted"` and `interruptions`; call again with `resumeFrom: output.state` and `approvals`. Denied calls appear in `toolCalls` with `isError: true`. See tool-agent-runtime's "Tool approval hooks".
 - `onEvent` gets every runtime event; if it throws, the run continues, the error is reported once with `console.warn`, and no further events are forwarded for that run.
 - `onProgress` gets `Running <tool label>` when a tool starts (override with `toolProgressMessage`, return `undefined` to silence).
 - Errors thrown by the runtime (such as invalid limits) propagate to the caller.
 - **Model selection:** with a fixed `model`, `input.model` is ignored (`supports.modelSelection: false`). Pass a function to route on it — for example `model: (input) => modelsBySelector[input.model ?? "default"]`, where you build `modelsBySelector` from your llm-profiles config (an llm-profiles router whose factory returns pi-ai models works the same way: `(input) => router.forComponent(input.model ?? "main-agent")`).
 - `input.reasoning` overrides the adapter's `reasoning` for that call; `"off"` disables extended thinking.
 - `prepareStep` (adapter option) is passed to every run — for example `createToolResultClearing()` (below).
-- `metadata()` returns `{ enabled: true, supports: { limits: true, usage: true, events: true, modelSelection, runState: true } }`, where `modelSelection` is true for the function form of `model`.
+- `metadata()` returns `{ enabled: true, supports: { limits: true, usage: true, events: true, modelSelection, runState: true, approvals: true } }`, where `modelSelection` is true for the function form of `model`.
 
 ### `runDocumentAgentLoop({ llm, adapter, createRuntimeContext?, onProgress? })`
 

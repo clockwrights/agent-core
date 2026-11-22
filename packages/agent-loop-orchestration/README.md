@@ -247,6 +247,7 @@ Status from the adapter's `endReason` (adapters that report one, such as `create
 |---|---|---|
 | `completed`, `terminated`, `stop_condition` | `completed` | |
 | `max_turns`, `max_tool_calls`, `budget` | `partial` | Text, tool calls and usage are kept; `warnings` names the limit. The child stopped early, so treat the result as possibly incomplete. |
+| `interrupted` | `partial` | A tool call of the child waits for approval; the envelope keeps `interruptions`. Approvals are not bubbled up to the parent run — children are read-only by default, so give them approval policies only if you handle `interruptions` yourself. |
 | `error` | `failed` | `failure: { code: "llm_error", retryable: true }`; text and tool calls are kept. |
 | `aborted` | `cancelled` | |
 | none (older adapters) | `completed` | Same as before. |

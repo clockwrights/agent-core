@@ -6,7 +6,7 @@
  * through these contracts.
  */
 
-import type { AgentEndReason, AgentUsage } from "@maya-ai/tool-agent-runtime";
+import type { AgentEndReason, AgentUsage, ToolInterruption } from "@maya-ai/tool-agent-runtime";
 
 // ---------------------------------------------------------------------------
 // Lifecycle status
@@ -178,6 +178,11 @@ export interface ChildRunResultEnvelope {
   endReason?: AgentEndReason;
   /** Model calls the child made, when the adapter reports it. */
   turns?: number;
+  /**
+   * Tool calls the child is waiting to have approved (`endReason`
+   * "interrupted"). Approvals are not bubbled up to the parent run.
+   */
+  interruptions?: ToolInterruption[];
   /** Model selector the child was run with (after resolution), if any. */
   model?: string;
   /** Reasoning effort the child was run with (after resolution), if any. */

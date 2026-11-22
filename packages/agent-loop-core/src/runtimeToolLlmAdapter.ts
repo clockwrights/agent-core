@@ -62,6 +62,8 @@ export interface RuntimeToolLlmAdapterOptions {
  *   call's model calls; `state.turns` counts the whole run.
  * - `messages` / `resumeFrom` are forwarded; with either, an empty `prompt`
  *   means no new user turn.
+ * - `beforeToolCall` / `afterToolCall` / `approvals` are forwarded; an
+ *   interrupted run returns `endReason: "interrupted"` and `interruptions`.
  * - Errors thrown by the runtime (for example invalid limits) propagate.
  */
 /** Turn cap the reference adapter applies when neither the call nor `defaults` sets one. */
@@ -83,7 +85,8 @@ export function createRuntimeToolLlmAdapter(options: RuntimeToolLlmAdapterOption
         usage: true,
         events: true,
         modelSelection: typeof options.model === "function",
-        runState: true
+        runState: true,
+        approvals: true
       }
     }),
 
@@ -145,6 +148,9 @@ export function createRuntimeToolLlmAdapter(options: RuntimeToolLlmAdapterOption
           ...(prompt !== undefined ? { prompt } : {}),
           ...(input.messages !== undefined ? { messages: input.messages } : {}),
           ...(input.resumeFrom !== undefined ? { resumeFrom: input.resumeFrom } : {}),
+          ...(input.beforeToolCall !== undefined ? { beforeToolCall: input.beforeToolCall } : {}),
+          ...(input.afterToolCall !== undefined ? { afterToolCall: input.afterToolCall } : {}),
+          ...(input.approvals !== undefined ? { approvals: input.approvals } : {}),
           images: input.images?.map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType })),
           signal: input.signal,
           apiKey: options.apiKey,
@@ -171,7 +177,8 @@ export function createRuntimeToolLlmAdapter(options: RuntimeToolLlmAdapterOption
         // A resumed run's pending batch emits a turn_end without a model call,
         // so derive this call's model calls from the state when it is there.
         turns: finished?.state ? finished.state.turns - (input.resumeFrom?.turns ?? 0) : turns,
-        ...(finished?.state ? { state: finished.state } : {})
+        ...(finished?.state ? { state: finished.state } : {}),
+        ...(finished?.state?.interruptions ? { interruptions: finished.state.interruptions } : {})
       };
     }
   };

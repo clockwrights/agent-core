@@ -296,3 +296,22 @@ test("executor sends the resolved model/reasoning to the adapter and records the
 test("policy no longer carries the never-enforced child token budget", () => {
   assert.equal("defaultChildTokenBudget" in DEFAULT_ORCHESTRATION_POLICY, false);
 });
+
+test("end reason interrupted → partial with the interruptions kept; not bubbled to the parent", async () => {
+  const interruptions = [
+    { toolCallId: "c1", toolName: "send_email", arguments: { to: "a@example.test" }, argumentsHash: "h1", reason: "external" }
+  ];
+  const { adapter } = stubAdapter({ text: "Drafted.", toolCalls: [], usage, endReason: "interrupted", interruptions });
+  const { envelope, registry } = await run(adapter);
+  assert.equal(envelope.status, "partial");
+  assert.equal(envelope.endReason, "interrupted");
+  assert.deepEqual(envelope.interruptions, interruptions);
+  assert.deepEqual(envelope.warnings, ["Child stopped to wait for approval of 1 tool call(s); the result may be incomplete."]);
+  assert.equal(registry.get("child-1")?.status, "partial");
+});
+
+test("envelopes without interruptions carry no interruptions field", async () => {
+  const { adapter } = stubAdapter({ text: "Answer.", toolCalls: [], endReason: "completed" });
+  const { envelope } = await run(adapter);
+  assert.equal("interruptions" in envelope, false);
+});

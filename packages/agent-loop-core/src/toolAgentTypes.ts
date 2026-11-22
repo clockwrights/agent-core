@@ -5,7 +5,10 @@ import type {
   AgentTool,
   AgentUsage,
   RunState,
-  ToolAgentBudget
+  ToolAgentBudget,
+  ToolAgentRunInput,
+  ToolApproval,
+  ToolInterruption
 } from "@maya-ai/tool-agent-runtime";
 
 export interface ToolAgentRuntimeMetadata {
@@ -18,6 +21,8 @@ export interface ToolAgentRuntimeMetadata {
    * - `events`: `onEvent` receives the runtime's raw events
    * - `modelSelection`: `model` on the input picks the model for that call
    * - `runState`: `messages` / `resumeFrom` on the input and `state` on the output
+   * - `approvals`: `beforeToolCall` / `afterToolCall` / `approvals` on the input and
+   *   `interruptions` on the output
    */
   supports?: {
     limits?: boolean;
@@ -25,6 +30,7 @@ export interface ToolAgentRuntimeMetadata {
     events?: boolean;
     modelSelection?: boolean;
     runState?: boolean;
+    approvals?: boolean;
   };
 }
 
@@ -118,6 +124,18 @@ export interface ToolAgentInput extends ToolAgentLimits {
    * Not combinable with `messages`.
    */
   resumeFrom?: RunState;
+  /**
+   * Decide each tool call before it runs (allow / deny / ask). An "ask" ends
+   * the run with `endReason: "interrupted"` and `interruptions` on the output;
+   * resume with `resumeFrom` + `approvals`. Same semantics as
+   * tool-agent-runtime's `beforeToolCall`. Adapters that cannot honour it
+   * SHOULD report `supports.approvals: false` (or omit it).
+   */
+  beforeToolCall?: ToolAgentRunInput["beforeToolCall"];
+  /** Inspect or replace each executed call's result before the model sees it. */
+  afterToolCall?: ToolAgentRunInput["afterToolCall"];
+  /** Human decisions for the interrupted calls of `resumeFrom`, keyed by tool-call id. */
+  approvals?: Record<string, ToolApproval>;
 }
 
 export interface ToolAgentOutput {
@@ -137,4 +155,6 @@ export interface ToolAgentOutput {
   turns?: number;
   /** Serializable state of the run; pass as `resumeFrom` to continue. */
   state?: RunState;
+  /** Calls waiting for a human decision when `endReason` is "interrupted" (same as `state.interruptions`). */
+  interruptions?: ToolInterruption[];
 }
