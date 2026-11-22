@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@maya-ai/tool-agent-runtime";
 import { memoryPageBody, readMemoryProvenance } from "./provenance.js";
 
 // Core boundary: domain-neutral. The always-loaded memory tier: a few pinned
@@ -101,6 +102,19 @@ export function collectPinnedMemory(
       ].join("\n")
     : "";
   return { block, included, omitted, includedChars, requestedChars, maxChars, overBudget: requestedChars > maxChars };
+}
+
+/**
+ * The pinned block as its own user message, for the `messages` input of a
+ * run (tool-agent-runtime `runAgent` / `runToolAgent`, or a `ToolLlmAdapter`
+ * call). Keeping it apart from the prompt keeps the prompt clean and the
+ * cached prefix stable while the pages do not change. Returns `[]` for an
+ * empty or missing block. Pass it only when a run starts: a resumed run
+ * already has it in `resumeFrom.messages`.
+ */
+export function pinnedMemoryMessages(block: string | undefined, options: { timestamp?: number } = {}): AgentMessage[] {
+  if (!block) return [];
+  return [{ role: "user", content: block, timestamp: options.timestamp ?? Date.now() }];
 }
 
 /** Load pinned memory from an async store (e.g. the markdown-wiki memory runtime's store). */

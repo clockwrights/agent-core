@@ -42,7 +42,8 @@ export type {
 } from "./provenance.js";
 export {
   collectPinnedMemory,
-  loadPinnedMemory
+  loadPinnedMemory,
+  pinnedMemoryMessages
 } from "./pinnedMemory.js";
 export type {
   PinnedMemory,

@@ -546,7 +546,7 @@ A few short pages — identity, standing preferences, key decisions — can be l
 - `collectPinnedMemory(files, options)` / `loadPinnedMemory(asyncStore, options)` select pinned pages — explicit `paths` first, then every page under `prefix` (e.g. `"system/"`) in path order — and render them as one `<pinned-memory>` block (frontmatter stripped).
 - `maxChars` (default 4 000) is a hard budget: pages that do not fit are left out **whole** (never cut mid-page) and reported in `omitted` with `overBudget: true`.
 - Pages with **untrusted** provenance are excluded unless `allowUntrusted: true`.
-- With `pinnedMemory` in `createMemoryRuntimeContext`, the block is returned as `context.pinnedMemory` (plus warning diagnostics for left-out pages). Put it in the first user turn — e.g. prepend it to the prompt — rather than the system prompt, so memory updates do not invalidate the cached system prompt.
+- With `pinnedMemory` in `createMemoryRuntimeContext`, the block is returned as `context.pinnedMemory` (plus warning diagnostics for left-out pages). Put it in the user side of the conversation rather than the system prompt, so memory updates do not invalidate the cached system prompt. The simplest way is its own message before the prompt: `messages: pinnedMemoryMessages(context.pinnedMemory)` (returns `[]` when nothing is pinned; skip it when resuming, the saved state already holds it). Prepending it to the prompt works too.
 - With `pinned` in the engine config, `lint()` warns (`pinned-memory` category) when the tier is over budget, holds untrusted pages, or lists missing ones.
 
 ### Wiring memory into the agent

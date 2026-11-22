@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createReplayModel, replyText } from "@maya-ai/tool-agent-runtime/testing";
 import {
   collectPinnedMemory,
+  createRuntimeToolLlmAdapter,
   createMarkdownWikiEngine,
   createMemoryRuntimeContext,
   loadPinnedMemory,
+  pinnedMemoryMessages,
   stampMemoryProvenance,
   type MarkdownWikiEngineStore,
   type MarkdownWikiFileStore
@@ -113,3 +116,31 @@ test("wiki lint warns about an over-budget, untrusted or missing pinned tier", (
   const plain = createMarkdownWikiEngine({ store });
   assert.equal(plain.lint().issues.some((issue) => issue.category === "pinned-memory"), false);
 });
+
+test("pinnedMemoryMessages: the block as its own user message ahead of the prompt", async () => {
+  assert.deepEqual(pinnedMemoryMessages(undefined), []);
+  assert.deepEqual(pinnedMemoryMessages(""), []);
+  const pinned = collectPinnedMemory(list(), { prefix: "system/", maxChars: 200 });
+  const messages = pinnedMemoryMessages(pinned.block, { timestamp: 1 });
+  assert.deepEqual(messages, [{ role: "user", content: pinned.block, timestamp: 1 }]);
+
+  const replay = createReplayModel([replyText("noted")]);
+  const adapter = createRuntimeToolLlmAdapter({ model: replay.model });
+  const output = (await adapter.runToolAgent({ systemPrompt: "s", prompt: "hello", tools: [], sessionId: "t", messages }))!;
+  replay.dispose();
+  const transcript = output.state!.messages;
+  assert.equal(output.text, "noted");
+  assert.deepEqual(
+    transcript.map((m) => [m.role, m.role === "user" ? userText(m.content).slice(0, 15) : ""]),
+    [
+      ["user", "<pinned-memory>"],
+      ["user", "hello"],
+      ["assistant", ""]
+    ]
+  );
+  assert.equal(replay.calls[0]!.messages.length, 2, "the model saw the pinned message, then the prompt");
+});
+
+function userText(content: string | ReadonlyArray<{ type: string; text?: string }>): string {
+  return typeof content === "string" ? content : content.map((part) => part.text ?? "").join("");
+}

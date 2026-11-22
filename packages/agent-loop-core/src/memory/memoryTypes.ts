@@ -77,7 +77,8 @@ export interface MemoryRuntimeContext {
   diagnostics: MemoryRuntimeDiagnostic[];
   /**
    * Rendered always-loaded tier when `pinnedMemory` is configured. Put it in
-   * the first user turn (e.g. prepend to the prompt), not the system prompt,
+   * the user side of the conversation (for example as its own message with
+   * `pinnedMemoryMessages`, or prepended to the prompt), not the system prompt,
    * so memory updates do not invalidate the cached system prompt.
    */
   pinnedMemory?: string;
