@@ -39,5 +39,15 @@ export type {
   MarkdownWikiSyncOptions
 } from "./markdownWikiEngine.js";
 export type {
+  MarkdownWikiMaintenanceToolOptions,
   WikiMaintenanceToolDetails
 } from "./markdownWikiTools.js";
+export {
+  createMarkdownWikiWriteToolDefinitions,
+  wikiEditPageToolName,
+  wikiWritePageToolName
+} from "./markdownWikiWriteTools.js";
+export type {
+  MarkdownWikiWriteToolOptions,
+  WikiWriteToolDetails
+} from "./markdownWikiWriteTools.js";

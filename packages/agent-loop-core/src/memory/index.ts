@@ -26,4 +26,18 @@ export type {
   MemorySource,
   MemorySourceFilter
 } from "./memoryTypes.js";
+export {
+  UNTRUSTED_MEMORY_LABEL,
+  createUntrustedOriginTracker,
+  externalContentToolNames,
+  memoryPageBody,
+  readMemoryProvenance,
+  stampMemoryProvenance
+} from "./provenance.js";
+export type {
+  MemoryOrigin,
+  MemoryProvenance,
+  MemoryProvenanceSource,
+  UntrustedOriginTracker
+} from "./provenance.js";
 export * from "./markdown-wiki/index.js";

@@ -1,6 +1,7 @@
 import type { AgentTool, AgentToolResult } from "@maya-ai/tool-agent-runtime";
 import { Type } from "typebox";
 import type { RegisteredTool } from "../toolRegistry.js";
+import { UNTRUSTED_MEMORY_LABEL } from "./provenance.js";
 import type {
   MemoryGetResult,
   MemoryRuntime,
@@ -98,7 +99,10 @@ function createMemorySearchTool(runtime: MemoryRuntime): AgentTool<any, MemorySe
           minScore: input.minScore,
           source: input.source
         });
-        return jsonResult(results, {
+        const labelled = results.map((result) =>
+          result.origin === "untrusted" ? { ...result, snippet: `${UNTRUSTED_MEMORY_LABEL}\n${result.snippet}` } : result
+        );
+        return jsonResult(labelled, {
           query,
           resultCount: results.length,
           status: "ok"
@@ -176,7 +180,8 @@ function formatMemoryGetResult(result: MemoryGetResult): string {
     `Lines: ${result.fromLine}-${result.fromLine + result.lineCount - 1} of ${result.totalLines}`
   ].join("\n");
   const suffix = result.truncated ? "\n\n[Truncated]" : "";
-  return `${header}\n\n${result.content}${suffix}`;
+  const label = result.origin === "untrusted" ? `${UNTRUSTED_MEMORY_LABEL}\n\n` : "";
+  return `${header}\n\n${label}${result.content}${suffix}`;
 }
 
 function jsonResult(

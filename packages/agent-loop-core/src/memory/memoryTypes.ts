@@ -1,4 +1,5 @@
 import type { RegisteredTool } from "../toolRegistry.js";
+import type { MemoryOrigin } from "./provenance.js";
 
 export type MemorySource = "wiki" | "raw" | "sessions";
 export type MemorySourceFilter = MemorySource | "all";
@@ -34,6 +35,8 @@ export interface MemorySearchResult {
   startLine?: number;
   endLine?: number;
   updatedAt?: string;
+  /** Provenance origin of an agent-written page, when it has provenance. */
+  origin?: MemoryOrigin;
 }
 
 export interface MemoryGetInput {
@@ -52,6 +55,8 @@ export interface MemoryGetResult {
   totalLines: number;
   truncated: boolean;
   updatedAt?: string;
+  /** Provenance origin of an agent-written page, when it has provenance. */
+  origin?: MemoryOrigin;
 }
 
 export interface MemoryRuntime {

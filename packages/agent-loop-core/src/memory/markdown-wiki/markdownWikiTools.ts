@@ -1,7 +1,9 @@
 import type { AgentTool, AgentToolResult } from "@maya-ai/tool-agent-runtime";
 import { Type } from "typebox";
 import type { RegisteredTool, ToolRisk } from "../../toolRegistry.js";
+import type { MemoryProvenanceSource } from "../provenance.js";
 import type { MarkdownWikiEngine, MarkdownWikiIssue } from "./markdownWikiEngine.js";
+import { wikiEditPageToolName, wikiWritePageToolName } from "./markdownWikiWriteTools.js";
 
 export const wikiLintToolName = "wiki_lint";
 export const wikiUpdateIndexToolName = "wiki_update_index";
@@ -29,13 +31,33 @@ interface RecordRelationshipParams {
   date?: string;
 }
 
-export function createMarkdownWikiMaintenanceToolDefinitions(engine: MarkdownWikiEngine): RegisteredTool[] {
+export interface MarkdownWikiMaintenanceToolOptions {
+  /**
+   * When set, log entries and relationship edges record who wrote them
+   * (tool, origin, session, actor). Default: no provenance (unchanged format).
+   */
+  provenance?: MemoryProvenanceSource;
+}
+
+export function createMarkdownWikiMaintenanceToolDefinitions(
+  engine: MarkdownWikiEngine,
+  options: MarkdownWikiMaintenanceToolOptions = {}
+): RegisteredTool[] {
   return [
     definition(createWikiLintTool(engine), "read"),
     definition(createWikiUpdateIndexTool(engine), "write"),
-    definition(createWikiAppendLogTool(engine), "write"),
-    definition(createWikiRecordRelationshipTool(engine), "write")
+    definition(createWikiAppendLogTool(engine, options.provenance), "write"),
+    definition(createWikiRecordRelationshipTool(engine, options.provenance), "write")
   ];
+}
+
+function provenanceFields(tool: string, source: MemoryProvenanceSource) {
+  return {
+    tool,
+    origin: source.origin?.() ?? "unverified",
+    ...(source.session ? { session: source.session } : {}),
+    ...(source.actor ? { actor: source.actor } : {})
+  };
 }
 
 export function buildMarkdownWikiMaintenancePrompt(input: { availableTools: Set<string> }): string {
@@ -43,14 +65,20 @@ export function buildMarkdownWikiMaintenancePrompt(input: { availableTools: Set<
     input.availableTools.has(wikiLintToolName) ? wikiLintToolName : undefined,
     input.availableTools.has(wikiUpdateIndexToolName) ? wikiUpdateIndexToolName : undefined,
     input.availableTools.has(wikiAppendLogToolName) ? wikiAppendLogToolName : undefined,
-    input.availableTools.has(wikiRecordRelationshipToolName) ? wikiRecordRelationshipToolName : undefined
+    input.availableTools.has(wikiRecordRelationshipToolName) ? wikiRecordRelationshipToolName : undefined,
+    input.availableTools.has(wikiWritePageToolName) ? wikiWritePageToolName : undefined,
+    input.availableTools.has(wikiEditPageToolName) ? wikiEditPageToolName : undefined
   ].filter(Boolean);
   if (!tools.length) return "";
+  const canWritePages = input.availableTools.has(wikiWritePageToolName) || input.availableTools.has(wikiEditPageToolName);
   return [
     "## Wiki Maintenance",
     `Available wiki maintenance tools: ${tools.join(", ")}.`,
     "Use wiki_lint to inspect wiki health before broad maintenance changes.",
     "Use write-capable wiki tools only when maintaining generated wiki structure, logs, or relationship edges.",
+    ...(canWritePages
+      ? ["Use wiki_write_page or wiki_edit_page to record durable knowledge as content pages; provenance is recorded automatically."]
+      : []),
     ""
   ].join("\n");
 }
@@ -102,7 +130,10 @@ function createWikiUpdateIndexTool(engine: MarkdownWikiEngine): AgentTool<any, W
   };
 }
 
-function createWikiAppendLogTool(engine: MarkdownWikiEngine): AgentTool<any, WikiMaintenanceToolDetails> {
+function createWikiAppendLogTool(
+  engine: MarkdownWikiEngine,
+  provenance?: MemoryProvenanceSource
+): AgentTool<any, WikiMaintenanceToolDetails> {
   return {
     name: wikiAppendLogToolName,
     label: "Wiki Append Log",
@@ -119,9 +150,14 @@ function createWikiAppendLogTool(engine: MarkdownWikiEngine): AgentTool<any, Wik
         const action = input.action?.trim();
         const details = input.details?.trim();
         if (!action || !details) return jsonResult({ error: "action and details are required" }, { status: "error" });
+        const stamp = provenance ? provenanceFields(wikiAppendLogToolName, provenance) : undefined;
         engine.appendLog({
           action,
-          details,
+          details: stamp
+            ? `${details} | provenance: ${Object.entries(stamp)
+                .map(([key, value]) => `${key}=${value}`)
+                .join(", ")}`
+            : details,
           affectedFiles: input.affectedFiles?.map((file) => file.trim()).filter(Boolean) ?? []
         });
         return jsonResult(
@@ -140,7 +176,10 @@ function createWikiAppendLogTool(engine: MarkdownWikiEngine): AgentTool<any, Wik
   };
 }
 
-function createWikiRecordRelationshipTool(engine: MarkdownWikiEngine): AgentTool<any, WikiMaintenanceToolDetails> {
+function createWikiRecordRelationshipTool(
+  engine: MarkdownWikiEngine,
+  provenance?: MemoryProvenanceSource
+): AgentTool<any, WikiMaintenanceToolDetails> {
   return {
     name: wikiRecordRelationshipToolName,
     label: "Wiki Record Relationship",
@@ -163,7 +202,16 @@ function createWikiRecordRelationshipTool(engine: MarkdownWikiEngine): AgentTool
         if (!from || !to || !type || !evidence) {
           return jsonResult({ error: "from, to, type, and evidence are required" }, { status: "error" });
         }
-        const added = engine.recordRelationships([{ from, to, type, evidence, date: input.date?.trim() || undefined }]);
+        const added = engine.recordRelationships([
+          {
+            from,
+            to,
+            type,
+            evidence,
+            date: input.date?.trim() || undefined,
+            ...(provenance ? { provenance: provenanceFields(wikiRecordRelationshipToolName, provenance) } : {})
+          }
+        ]);
         return jsonResult(
           {
             added,

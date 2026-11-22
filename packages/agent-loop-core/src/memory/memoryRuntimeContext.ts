@@ -5,15 +5,30 @@ import {
   buildMarkdownWikiMaintenancePrompt,
   createMarkdownWikiMaintenanceToolDefinitions,
   createMarkdownWikiMemoryRuntime,
+  createMarkdownWikiWriteToolDefinitions,
   type MarkdownWikiEngine,
-  type MarkdownWikiMemoryRuntimeConfig
+  type MarkdownWikiMemoryRuntimeConfig,
+  type MarkdownWikiWriteToolOptions
 } from "./markdown-wiki/index.js";
+import type { MemoryProvenanceSource } from "./provenance.js";
 
 export interface MemoryConfig {
   enabled: boolean;
   runtime?: MemoryRuntime;
   markdownWiki?: MarkdownWikiMemoryRuntimeConfig;
   markdownWikiEngine?: MarkdownWikiEngine;
+  /**
+   * Register the page write tools (`wiki_write_page`, `wiki_edit_page`) over
+   * this store. Off when absent. The `markdownWikiEngine`, when set, protects
+   * its managed files and refreshes the index after writes.
+   */
+  markdownWikiWrite?: Omit<MarkdownWikiWriteToolOptions, "engine" | "provenance">;
+  /**
+   * Provenance recorded by write tools (pages always; log entries and
+   * relationship edges only when this is set). Use
+   * `createUntrustedOriginTracker` for `origin`.
+   */
+  provenance?: MemoryProvenanceSource;
   toolAllow?: string[];
   toolDeny?: string[];
 }
@@ -39,7 +54,16 @@ export async function createMemoryRuntimeContext(config: MemoryConfig): Promise<
   const toolDefinitions = filterDefinitions(
     [
       ...createMemoryToolDefinitions(runtime),
-      ...(config.markdownWikiEngine ? createMarkdownWikiMaintenanceToolDefinitions(config.markdownWikiEngine) : [])
+      ...(config.markdownWikiEngine
+        ? createMarkdownWikiMaintenanceToolDefinitions(config.markdownWikiEngine, { provenance: config.provenance })
+        : []),
+      ...(config.markdownWikiWrite
+        ? createMarkdownWikiWriteToolDefinitions({
+            ...config.markdownWikiWrite,
+            engine: config.markdownWikiEngine,
+            provenance: config.provenance
+          })
+        : [])
     ],
     {
     allow: config.toolAllow ?? [],

@@ -26,6 +26,8 @@ export interface MarkdownWikiRelationship {
   type: string;
   evidence: string;
   date?: string;
+  /** Who recorded the edge; set when the maintenance tools are given a provenance source. */
+  provenance?: { tool: string; origin: string; session?: string; actor?: string };
 }
 
 export interface MarkdownWikiLogEntry {
@@ -95,6 +97,8 @@ export interface MarkdownWikiEngine {
   readRelationships(): MarkdownWikiRelationship[];
   lint(): MarkdownWikiLintReport;
   renderIndex(options?: MarkdownWikiIndexRenderOptions): string;
+  /** Paths the engine maintains itself (support, generated, log, relationship files). */
+  managedPaths?(): string[];
 }
 
 const defaultLogPath = "log.md";
@@ -211,12 +215,20 @@ export function extractMarkdownTitle(content: string): string | undefined {
 }
 
 export function summarizeMarkdownContent(content: string): string {
-  const lines = content
+  // Leading frontmatter (tags, provenance) is metadata, not summary text.
+  const lines = stripLeadingFrontmatter(content)
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("#") && !line.startsWith("---") && !line.startsWith("_Auto-generated"));
   const text = lines.slice(0, 3).join(" ").replace(/\s+/g, " ");
   return text.length > 180 ? `${text.slice(0, 177)}...` : text;
+}
+
+function stripLeadingFrontmatter(content: string): string {
+  const normalized = content.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) return normalized;
+  const end = normalized.indexOf("\n---", 4);
+  return end === -1 ? normalized : normalized.slice(end + 4);
 }
 
 export function normalizeMarkdownWikiPath(filePath: string | undefined): string {
@@ -329,6 +341,17 @@ class DefaultMarkdownWikiEngine implements MarkdownWikiEngine {
       infoCount: issues.filter((issue) => issue.severity === "info").length,
       issues
     };
+  }
+
+  managedPaths(): string[] {
+    return Array.from(
+      new Set([
+        ...this.requiredFiles.map((file) => normalizeMarkdownWikiPath(file.path)),
+        ...this.generatedFiles.map((file) => normalizeMarkdownWikiPath(file.path)),
+        this.logPath,
+        this.relationshipsPath
+      ])
+    );
   }
 
   renderIndex(options?: MarkdownWikiIndexRenderOptions): string {
