@@ -185,3 +185,60 @@ function formatDiagnostics(runtime: AgentRuntimeContext): string | undefined {
   if (lines.length === 0) return undefined;
   return ["[Runtime Diagnostics]", ...lines].join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// Parent-side delegation guidance (opt-in)
+// ---------------------------------------------------------------------------
+
+import type { OrchestrationPolicy } from "./orchestrationPolicy.js";
+
+/**
+ * A system-prompt block that teaches the parent when and how to delegate:
+ * scale effort to the task, delegate only independent subtasks, and write
+ * every brief with the same five parts. Limits come from the policy.
+ * Append it to the parent system prompt yourself, or pass
+ * `appendDelegationGuidance: true` to `runOrchestrator`.
+ */
+export function buildDelegationGuidance(
+  policy: Pick<OrchestrationPolicy, "maxBatchTasks" | "maxConcurrentChildren"> = { maxBatchTasks: 3, maxConcurrentChildren: 2 }
+): string {
+  return [
+    "[Delegation Guidance]",
+    "Scale effort to the task before delegating:",
+    "- Simple lookups or a few tool calls: do the work yourself; do not delegate.",
+    `- Several independent questions: delegate them together with delegate_tasks (at most ${policy.maxBatchTasks} per call; ${policy.maxConcurrentChildren} run at once).`,
+    "- One large, separable subtask: delegate it with delegate_task.",
+    "- Work whose steps depend on each other, or that needs your full context: keep it yourself.",
+    "Delegated runs see only their brief (plus selected context in fork mode) and cannot ask you questions.",
+    "Write each brief with these parts:",
+    "1. Objective — the single question or outcome the run must deliver.",
+    "2. Context — facts you already have that the run needs; what has been tried.",
+    "3. Deliverable — format and length of the answer (e.g. bullet findings with sources, under 300 words).",
+    "4. Scope — what to cover and what to leave out; tools or sources to prefer or avoid.",
+    "5. Done when — the condition for stopping, so the run does not over- or under-search.",
+    "Check each result's status: \"partial\" means it stopped at a limit and may be incomplete."
+  ].join("\n");
+}
+
+export interface DelegationBriefInput {
+  objective: string;
+  context?: string;
+  deliverable: string;
+  scope?: string;
+  doneWhen?: string;
+}
+
+/** Format a child prompt in the five-part brief structure used by the guidance. */
+export function buildDelegationBrief(input: DelegationBriefInput): string {
+  const section = (title: string, body: string | undefined) =>
+    body && body.trim().length > 0 ? `[${title}]\n${body.trim()}` : undefined;
+  return [
+    section("Objective", input.objective),
+    section("Context", input.context),
+    section("Deliverable", input.deliverable),
+    section("Scope", input.scope),
+    section("Done When", input.doneWhen)
+  ]
+    .filter((part): part is string => part !== undefined)
+    .join("\n\n");
+}

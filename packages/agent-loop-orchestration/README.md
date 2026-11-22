@@ -435,6 +435,23 @@ Unknown preset names fall through to a fully-restricted policy (every source dis
 
 ---
 
+## Delegation guidance (opt-in)
+
+How well a parent delegates depends mostly on its instructions: when to delegate at all, how many children to use, and how complete each brief is. Two helpers provide tested defaults; neither changes anything unless you use it.
+
+- `buildDelegationGuidance(policy?)` returns a system-prompt block that scales effort to the task (do small lookups yourself; batch independent questions with `delegate_tasks`; keep dependent work), states the policy's batch and concurrency limits, explains that children only see their brief, and asks for every brief in five parts — **Objective, Context, Deliverable, Scope, Done when**. It also tells the parent that a `partial` result may be incomplete.
+- `buildDelegationBrief({ objective, context?, deliverable, scope?, doneWhen? })` formats a child prompt in that structure, for programmatic `ChildRunRequest`s.
+
+```ts
+await runOrchestrator({ …, appendDelegationGuidance: true });   // appends the block to parentSystemPrompt
+// or compose it yourself:
+const parentSystemPrompt = `${myPrompt}\n\n${buildDelegationGuidance(policy)}`;
+```
+
+`appendDelegationGuidance` defaults to `false`; the parent system prompt is then used exactly as given.
+
+---
+
 ## Synthesis
 
 Phase 1 ships only `synthesisMode: "separate_call"`. After every orchestrated turn that produced at least one child:

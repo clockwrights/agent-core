@@ -77,7 +77,7 @@ export const delegateTaskParameters = Type.Object({
     )
   ),
   maxTokens: Type.Optional(
-    Type.Number({ description: "Token budget override for this delegated run." })
+    Type.Number({ description: "Maximum output tokens per model call for the delegated run (capped by policy)." })
   ),
   timeoutMs: Type.Optional(
     Type.Number({ description: "Timeout in milliseconds for this delegated run." })

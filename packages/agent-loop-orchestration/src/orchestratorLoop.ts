@@ -35,6 +35,7 @@ import {
   type OrchestrationPolicy
 } from "./orchestrationPolicy.js";
 import {
+  buildDelegationGuidance,
   buildSynthesisPrompt,
   buildSynthesisSystemPrompt
 } from "./orchestrationPrompt.js";
@@ -205,6 +206,11 @@ export interface RunOrchestratorInput {
   parentObjective: string;
   /** Parent system prompt for the planning loop. */
   parentSystemPrompt: string;
+  /**
+   * Append `buildDelegationGuidance(policy)` (effort scaling + brief template)
+   * to the parent system prompt. Default false: the prompt is used as given.
+   */
+  appendDelegationGuidance?: boolean;
   /** Parent user prompt for the planning loop. */
   parentPrompt: string;
   /**
@@ -306,7 +312,9 @@ export async function runOrchestrator(
   try {
     parentOutput = await runToolAgentLoop({
       llm: input.llm,
-      systemPrompt: input.parentSystemPrompt,
+      systemPrompt: input.appendDelegationGuidance
+        ? `${input.parentSystemPrompt}\n\n${buildDelegationGuidance(policy)}`
+        : input.parentSystemPrompt,
       prompt: input.parentPrompt,
       sessionId: input.parentRunId,
       tools: input.parentTools,

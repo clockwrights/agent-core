@@ -77,6 +77,8 @@ export {
 
 export {
   buildChildSystemPrompt,
+  buildDelegationBrief,
+  buildDelegationGuidance,
   buildSynthesisPrompt,
   buildSynthesisSystemPrompt
 } from "./orchestrationPrompt.js";
