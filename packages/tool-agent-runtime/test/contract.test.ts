@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Type } from "@mariozechner/pi-ai";
+import { Type } from "@earendil-works/pi-ai";
 import { AGENT_EVENT_VERSION, runToolAgent, type AgentEvent, type AgentTool } from "../src/index.js";
 import { collectEvents, createReplayModel, replyText, replyToolCalls } from "../src/testing.js";
 

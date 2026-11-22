@@ -35,7 +35,7 @@ import {
   type ToolCall,
   type ToolResultMessage,
   type Transport,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
 import { ToolTimeoutError } from "./errors.js";
 import { selectActiveTools, type PrepareStep, type StopCondition } from "./steps.js";
 import {

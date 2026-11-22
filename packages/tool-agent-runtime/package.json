@@ -26,7 +26,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@mariozechner/pi-ai": "^0.73.1"
+    "@earendil-works/pi-ai": "^0.74.2"
   },
   "devDependencies": {
     "@types/node": "^22.19.17",

@@ -28,7 +28,7 @@ import {
   type ToolCall,
   type TSchema,
   type Usage,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
 import type { AgentEventSink } from "./loop.js";
 import type { AgentEvent, AgentTool, AgentToolResult } from "./types.js";
 

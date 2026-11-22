@@ -7,8 +7,8 @@ import type {
   Tool,
   ToolResultMessage,
   Usage,
-} from "@mariozechner/pi-ai";
-import type { Static, TSchema } from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
+import type { Static, TSchema } from "@earendil-works/pi-ai";
 
 /**
  * Version of the `AgentEvent` / `AgentTool` / tool-result contract.

@@ -2,7 +2,7 @@
  * Per-step control: stop conditions (`stopWhen`) and the `prepareStep` hook.
  */
 
-import type { Message, Model, ThinkingLevel } from "@mariozechner/pi-ai";
+import type { Message, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { AgentStep, AgentTool, AgentUsage } from "./types.js";
 
 /** State passed to stop conditions after each turn's tool batch. */

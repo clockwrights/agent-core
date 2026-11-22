@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Type, type ToolResultMessage } from "@mariozechner/pi-ai";
+import { Type, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { runToolAgent, type AgentTool, type ToolAgentRunInput } from "../src/index.js";
 import { collectEvents, createReplayModel, replyText, replyToolCalls } from "../src/testing.js";
 

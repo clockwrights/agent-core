@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Type, getApiProvider, type AssistantMessage, type Message } from "@mariozechner/pi-ai";
+import { Type, getApiProvider, type AssistantMessage, type Message } from "@earendil-works/pi-ai";
 import { runToolAgent, type AgentTool } from "../src/index.js";
 import {
   CASSETTE_VERSION,

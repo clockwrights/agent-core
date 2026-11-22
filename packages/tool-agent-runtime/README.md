@@ -2,7 +2,7 @@
 
 Lightweight, domain-neutral runtime for tool-calling LLM agents.
 
-Built on top of [`@mariozechner/pi-ai`](https://www.npmjs.com/package/@mariozechner/pi-ai) for model streaming. This package adds:
+Built on top of [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai) for model streaming. This package adds:
 
 - a multi-turn agent loop (`runToolAgent`) that drives a conversation until the model stops calling tools,
 - a richer `AgentTool` contract (label, optional argument shim, streaming `onUpdate` callback, per-tool execution mode),
@@ -17,14 +17,14 @@ It is the foundation that the rest of the `@maya-ai/*` packages build on, but it
 npm install @maya-ai/tool-agent-runtime
 ```
 
-Peer/dependency: `@mariozechner/pi-ai` is a runtime dependency and supplies the underlying `Model`, `Tool`, and streaming primitives.
+Peer/dependency: `@earendil-works/pi-ai` is a runtime dependency and supplies the underlying `Model`, `Tool`, and streaming primitives.
 
 ## Quick start
 
 ```ts
 import { runToolAgent, type AgentTool } from "@maya-ai/tool-agent-runtime";
 import { Type } from "typebox";
-// Pick a Model<...> from @mariozechner/pi-ai (any provider it supports).
+// Pick a Model<...> from @earendil-works/pi-ai (any provider it supports).
 import { someModel } from "./model.js";
 
 const echoParams = Type.Object({ message: Type.String() });
