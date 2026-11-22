@@ -193,6 +193,7 @@ await runToolAgent({
 
 - **`stopWhen`** conditions receive `{ steps, totalUsage }`, where each `AgentStep` is `{ turn, message, toolResults, usage }`. They run after a turn's tool batch, only when the run would otherwise continue: `terminated` and `max_tool_calls` take precedence; `max_turns` and `budget` are checked after them. Conditions may be async.
 - **`prepareStep`** runs before every model call, including the first. Overrides apply to that step only and are not persisted: `messages` replaces what the model sees (for pruning or clearing old tool results) without changing the run's transcript; `activeTools` narrows both the tools offered and the tools that can execute in that step (a call outside the set gets a "not found" error result; unknown names are ignored). Tool choice is not exposed: pi-ai's generic stream options have no provider-neutral tool-choice field.
+- `composePrepareSteps(a, b, …)` combines hooks: they run in order and each sees the previous hook's `messages`; for `model`, `systemPrompt` and `reasoning` the last hook that sets one wins, and `activeTools` lists are intersected.
 - A hook that throws ends the run with reason `error` and `errorMessage` `"prepareStep failed: …"` / `"stopWhen failed: …"`. When `prepareStep` fails no model call happened, so `agent_end` follows the open `turn_start` directly.
 
 ## Cancellation

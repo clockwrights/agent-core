@@ -13,6 +13,11 @@ export interface ToolMetadata {
    * `ResolveToolsOptions.resultLimits`.
    */
   maxResultChars?: number;
+  /**
+   * Keep the tool out of the prompt until the model finds it with
+   * `tool_search` (see `createToolSearch`). Ignored unless tool search is used.
+   */
+  deferred?: boolean;
 }
 
 export interface ResolveToolsOptions {

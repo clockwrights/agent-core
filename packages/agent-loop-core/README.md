@@ -261,6 +261,23 @@ const llm = createRuntimeToolLlmAdapter({
 
 Error results are always kept. Cleared results lose their image parts too (the stub says so). Off unless you pass the hook: nothing is cleared by default.
 
+### Deferred tools and `tool_search` (opt-in)
+
+Large tool catalogs (many MCP tools) cost context on every call and make tool choice worse. Mark tools as deferred and let the model search for them:
+
+```ts
+registry.register(rareTool, { source: "domain", risk: "read", deferred: true });
+// MCP: createMcpToolDefinitions(runtime, { defer: true | ["server-a"] }), or mcp.deferTools in the capabilities config
+
+const search = createToolSearch(registry.list(policy));   // { tools, definitions, prepareStep, discovered, reset }
+await runToolAgent({ …, tools: search.tools, prepareStep: search.prepareStep }, emit);
+// with other hooks: prepareStep: composePrepareSteps(search.prepareStep, createToolResultClearing())
+```
+
+- The model sees the always-on tools plus `tool_search` ("search N additional tools"). `tool_search({ query, mode?, limit? })` ranks deferred tools by name, description and parameter names (BM25 keyword ranking, camelCase/snake_case aware) or matches them with `mode: "regex"`; matches become callable from the model's next step.
+- A deferred tool called before it was found gets a "not found" error result — the step's active tools also bound what can execute.
+- Discoveries reset at the start of each run; use one `createToolSearch` instance per concurrently running agent. With nothing deferred, tools are returned unchanged and the hook does nothing.
+
 ## Runtime context and capability assembly
 
 `AgentRuntimeContext` is the value the document loop passes to your adapter:

@@ -15,6 +15,8 @@ export interface AgentRuntimeMcpCapabilitiesConfig {
   toolDeny?: string[];
   clientName?: string;
   clientVersion?: string;
+  /** Mark MCP tools as deferred for `createToolSearch`: `true` for all servers or a list of server names. */
+  deferTools?: boolean | string[];
 }
 
 export type AgentRuntimeToolPolicyConfig = Partial<Pick<ToolPolicy, "enabled" | "sources" | "allow" | "deny">>;
@@ -43,7 +45,7 @@ export async function createAgentRuntimeContextFromConfig(config: AgentRuntimeCa
   if (mcpEnabled && mcpRuntime) {
     disposers.push(() => mcpRuntime.dispose());
     try {
-      mcpToolDefinitions = filterDefinitions(await createMcpToolDefinitions(mcpRuntime), {
+      mcpToolDefinitions = filterDefinitions(await createMcpToolDefinitions(mcpRuntime, { defer: config.mcp?.deferTools }), {
         allow: config.mcp?.toolAllow ?? [],
         deny: config.mcp?.toolDeny ?? []
       });

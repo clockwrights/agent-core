@@ -73,6 +73,38 @@ export type PrepareStep = (
   context: PrepareStepContext,
 ) => PrepareStepResult | void | Promise<PrepareStepResult | void>;
 
+/**
+ * Combine several `prepareStep` hooks into one. Hooks run in order; each sees
+ * the messages produced by the hooks before it. Results merge as follows:
+ * `model`, `systemPrompt` and `reasoning` — the last hook that sets one wins;
+ * `activeTools` — the intersection of every list that was set; `messages` —
+ * the output of the last hook that set them (they are chained).
+ */
+export function composePrepareSteps(...hooks: Array<PrepareStep | undefined>): PrepareStep {
+  const active = hooks.filter((hook): hook is PrepareStep => hook !== undefined);
+  return async (context) => {
+    let merged: PrepareStepResult | undefined;
+    let messages = context.messages;
+    for (const hook of active) {
+      const result = (await hook({ ...context, messages })) ?? undefined;
+      if (!result) continue;
+      merged ??= {};
+      if (result.model !== undefined) merged.model = result.model;
+      if (result.systemPrompt !== undefined) merged.systemPrompt = result.systemPrompt;
+      if (result.reasoning !== undefined) merged.reasoning = result.reasoning;
+      if (result.messages !== undefined) {
+        merged.messages = result.messages;
+        messages = result.messages;
+      }
+      if (result.activeTools !== undefined) {
+        const next = result.activeTools;
+        merged.activeTools = merged.activeTools ? merged.activeTools.filter((name) => next.includes(name)) : [...next];
+      }
+    }
+    return merged;
+  };
+}
+
 /** Tools offered for a step: the run's tools, narrowed by `activeTools` when given. */
 export function selectActiveTools(tools: AgentTool<any>[], activeTools: string[] | undefined): AgentTool<any>[] {
   if (!activeTools) return tools;

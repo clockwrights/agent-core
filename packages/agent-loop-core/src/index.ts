@@ -45,6 +45,14 @@ export {
   DEFAULT_ADAPTER_MAX_TURNS
 } from "./runtimeToolLlmAdapter.js";
 export {
+  createToolSearch,
+  toolSearchToolName
+} from "./toolSearch.js";
+export type {
+  ToolSearch,
+  ToolSearchOptions
+} from "./toolSearch.js";
+export {
   createToolResultClearing,
   DEFAULT_CLEARING_EXCLUDED_TOOLS
 } from "./toolResultClearing.js";
