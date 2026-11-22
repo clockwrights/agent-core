@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
     }
   },
   "files": [
@@ -18,13 +22,15 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "echo \"no tests\" && exit 0",
+    "test": "tsx --test test/*.test.ts",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@mariozechner/pi-ai": "^0.73.1"
   },
   "devDependencies": {
+    "@types/node": "^22.19.17",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   },
   "license": "MIT",
