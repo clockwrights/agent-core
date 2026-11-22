@@ -25,8 +25,11 @@ What's reusable lives here. What's app-specific (provider construction, the fail
 ```ts
 import {
   loadLlmRoutingConfig,
+  LlmProfilesConfigError,
   resolveComponentRouting,
   createLlmRouter,
+  redactProfile,
+  createSecretRedactor,
   type LlmProfile,
   type LlmRoutingConfig,
   type LlmRouter,
@@ -68,6 +71,7 @@ function loadLlmRoutingConfig(opts?: {
   filePath?: string;                                // default "config/llm-profiles.json" (resolved against process CWD)
   env?: NodeJS.ProcessEnv;                          // default process.env
   readFile?: (path: string) => string | undefined;  // overridable for tests
+  strict?: boolean;                                 // throw LlmProfilesConfigError instead of warning (default false)
 }): LlmRoutingConfig | null;
 ```
 
@@ -77,9 +81,36 @@ Priority:
 2. `LLM_PROFILES_JSON` env var (raw JSON string).
 3. Returns `null` — caller should fall back to a single-LLM path.
 
-`${ENV_VAR}` interpolation: any string of the form `${NAME}` is replaced with `process.env.NAME` at load time. Missing env vars produce a warning and an empty string; downstream provider construction may then fail loudly at first use.
+Env interpolation: a config string that is *exactly* one of these forms is replaced at load time (strings that merely contain `${…}` are left as is):
 
-Validation problems (missing `defaultProfile`, dangling component references, malformed JSON, missing required fields on a profile, duplicate profile names) produce a `console.warn` and the loader returns `null` — the consumer falls back to its single-LLM path rather than failing.
+| Form | Result |
+|---|---|
+| `${NAME}` | Value of `NAME`. Unset → empty string and a warning (downstream provider construction may then fail at first use). |
+| `${NAME:-default}` | Value of `NAME`, or `default` when `NAME` is unset or empty. No warning. |
+| `${NAME:?message}` | Value of `NAME`. Unset or empty → configuration error with `message`: the config is ignored (`null`) after a warning, or `LlmProfilesConfigError` in strict mode. |
+
+Validation problems (missing `defaultProfile`, dangling component references, malformed JSON, missing required fields on a profile, duplicate profile names) produce a `console.warn` and the loader returns `null` — the consumer falls back to its single-LLM path rather than failing. Smaller problems (an unknown component profile or fallback, a malformed or duplicate profile entry) drop just that item.
+
+**Strict mode** — `loadLlmRoutingConfig({ strict: true })` throws `LlmProfilesConfigError` (with `source` set to the file path or `"LLM_PROFILES_JSON"`) for every one of those problems, including an unset `${NAME}`, instead of warning and degrading. Use it in production so a broken config fails at startup rather than silently falling back. A missing config (no file and no env var) still returns `null`.
+
+Warnings never contain secrets: a rejected profile is described by its index, name and missing fields (never the object itself), and a JSON parse failure is reported by line/column only, because the raw `SyntaxError` message quotes a snippet of the input.
+
+### Redaction helpers
+
+Profiles returned by the loader hold real credentials. Use these before logging profiles or forwarding provider errors, events or trace attributes:
+
+```ts
+function redactProfile(profile: LlmProfile): LlmProfile;
+// copy with apiKey → "[REDACTED]" and user:password@ in baseUrl redacted; input unchanged
+
+function createSecretRedactor(source: LlmRoutingConfig | LlmProfile[]): (text: string) => string;
+// replaces every configured API key and baseUrl credential found in `text` with "[REDACTED]"
+```
+
+```ts
+const redact = createSecretRedactor(config);
+try { await provider.call(...) } catch (err) { log.error(redact(String(err))); }
+```
 
 ### Component resolution
 

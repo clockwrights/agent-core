@@ -13,7 +13,9 @@ export type {
   LlmRoutingConfig,
   LoadLlmRoutingOptions,
 } from "./profiles.js";
-export { loadLlmRoutingConfig, resolveComponentRouting } from "./profiles.js";
+export { LlmProfilesConfigError, loadLlmRoutingConfig, resolveComponentRouting } from "./profiles.js";
+
+export { REDACTED, redactProfile, createSecretRedactor } from "./redact.js";
 
 export type { LlmRouter, CreateLlmRouterOptions } from "./router.js";
 export { createLlmRouter } from "./router.js";
