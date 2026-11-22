@@ -29,7 +29,7 @@ import {
 import { decomposeFile } from "./decompose.js";
 import { extractUnit } from "./extract.js";
 import { segmentDocuments } from "./segment.js";
-import { classifyGroups } from "./classify.js";
+import { classifyGroups, type ClassificationSourceDocument } from "./classify.js";
 import { assembleAnalysisPackage, createProcessingLog, logStage } from "./assemble.js";
 import { expandZipSubmission, type ZipExtractionParallelism } from "./zip.js";
 import type { ExtractorPlugin } from "./extract.js";
@@ -86,7 +86,41 @@ export type DocumentPipelineDeps = {
    * undefined) when not provided.
    */
   continuationHandler?: ContinuationHandler;
+  /**
+   * Opt-in: let Tier C attach the source PDF natively (`documents`) instead of
+   * rendered page images. Takes effect only when the Tier C adapter sets
+   * `supportsDocuments`; PDFs larger than `maxBytes` (default
+   * NATIVE_PDF_MAX_BYTES, 32 MiB) keep the image path. Default off.
+   */
+  nativePdf?: boolean | { maxBytes?: number };
 };
+
+/** Default size cap for native PDF attachments (32 MiB, a common provider limit). */
+export const NATIVE_PDF_MAX_BYTES = 32 * 1024 * 1024;
+
+function nativePdfSources(
+  deps: DocumentPipelineDeps,
+  fileRecords: FileRecord[],
+  entryBuffers: Buffer[],
+): ClassificationSourceDocument[] | undefined {
+  if (!deps.nativePdf) return undefined;
+  const adapter = deps.tierCAdapter ?? deps.llmProvider;
+  if (!adapter?.supportsDocuments) return undefined;
+  const maxBytes =
+    (typeof deps.nativePdf === "object" ? deps.nativePdf.maxBytes : undefined) ?? NATIVE_PDF_MAX_BYTES;
+  const sources: ClassificationSourceDocument[] = [];
+  fileRecords.forEach((record, sourceFileIndex) => {
+    const buffer = entryBuffers[sourceFileIndex];
+    if (record.mimeType !== "application/pdf" || !buffer || buffer.byteLength > maxBytes) return;
+    sources.push({
+      sourceFileIndex,
+      data: buffer.toString("base64"),
+      mimeType: "application/pdf",
+      name: record.fileName,
+    });
+  });
+  return sources.length > 0 ? sources : undefined;
+}
 
 // ---------------------------------------------------------------------------
 // Default limits
@@ -318,6 +352,7 @@ export async function runDocumentPipeline(
         tierAThreshold: request.tierAThreshold,
         tierBThreshold: request.tierBThreshold,
         minTier: request.minTier,
+        sourceDocuments: nativePdfSources(deps, fileRecords, entryBuffers),
       });
       logStage(
         log,

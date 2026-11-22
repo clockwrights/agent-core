@@ -45,12 +45,14 @@ const result: DocumentPipelineResult = await runDocumentPipeline(request, deps);
 | `policyRegistry` | `DocumentPolicyRegistry` | Resolves `request.policyName` to a `DocumentPolicy`. |
 | `extraExtractors` | `ExtractorPlugin[]` | Merged with the built-in extractors. |
 | `continuationHandler` | `ContinuationHandler` | Called after assembly when `request.taskIntent` is present. |
+| `nativePdf` | `boolean \| { maxBytes?: number }` | Opt-in, default off. Tier C attaches the source PDF as a native document instead of rendered page images — see [Native PDF](#native-pdf-opt-in). |
 
 The pipeline depends on a **narrow LLM adapter** (`PipelineLlmAdapter`), not on any concrete provider:
 
 ```ts
 export interface PipelineLlmAdapter {
   readonly enabled: boolean;
+  readonly supportsDocuments?: boolean; // forwards `documents` (native PDF); default false
   generate(request: PipelineLlmRequest): Promise<PipelineLlmResponse | undefined>;
 }
 
@@ -60,10 +62,27 @@ type PipelineLlmRequest = {
   sessionId: string;
   maxTokens?: number;
   images?: { data: string; mimeType: string }[]; // base64-encoded for Tier C
+  documents?: { data: string; mimeType: string; name?: string }[]; // native PDF, opt-in
 };
 ```
 
-The pipeline never sends tool definitions through this adapter — tool use belongs to the agent loop, not the pipeline. Adapters that don't support multimodal calls SHOULD ignore `images` and record that they did so.
+The pipeline never sends tool definitions through this adapter — tool use belongs to the agent loop, not the pipeline. Adapters that don't support multimodal calls SHOULD ignore `images` and record that they did so. `documents` is only ever sent to adapters that set `supportsDocuments: true`.
+
+### Native PDF (opt-in)
+
+Some providers read a PDF directly (text layer and page images together), which is often more accurate than rendered page images and works for text PDFs that produced no images. To use it:
+
+```ts
+await runDocumentPipeline(request, {
+  tierCAdapter: myPdfCapableAdapter, // sets supportsDocuments: true and forwards `documents`
+  nativePdf: true,                   // or { maxBytes: 10 * 1024 * 1024 }
+});
+```
+
+- Applies to Tier C only, for groups whose pages all come from one PDF in the submission (single PDF or a PDF inside a ZIP). The whole file is attached once per call, and the prompt names the group's pages ("pages 2-3 of it"). Low-confidence field refinement sends the same PDF.
+- With a native PDF available, Tier C runs even when the group has no rendered images.
+- PDFs larger than `maxBytes` (default `NATIVE_PDF_MAX_BYTES`, 32 MiB), groups spanning files, non-PDF sources, and adapters without `supportsDocuments` keep the rendered-image path unchanged.
+- Calling `classifyGroups` directly: pass `sourceDocuments: [{ sourceFileIndex, data, mimeType, name }]`.
 
 ---
 
@@ -101,7 +120,7 @@ Each segmented document group is classified by a cascade. Each tier has a confid
 |------|-----------|------|-----------|
 | **A — Deterministic** | MRZ regex (TD3 passport / TD2 / TD1 ID), barcode anchor (CODE128/PDF417/QR/etc.), heuristic field parsing | None | Always (unless `minTier=tier-b` or `tier-c`) |
 | **B — LLM text** | Policy-injected text prompt with extracted text snippets | One LLM call | Tier A confidence below `tierAThreshold` AND `executionMode != deterministic-first` |
-| **C — Multimodal LLM** | Same prompt + actual rendered page images attached as `ImageContent` parts | One+ LLM calls with image bytes | Tier B confidence below `tierBThreshold` AND group has rendered images AND `executionMode` is `hybrid` or `full-multimodal` |
+| **C — Multimodal LLM** | Same prompt + actual rendered page images attached as `ImageContent` parts | One+ LLM calls with image bytes | Tier B confidence below `tierBThreshold` AND group has rendered images (or a native PDF, when `nativePdf` is on) AND `executionMode` is `hybrid` or `full-multimodal` |
 
 ### Execution modes
 
