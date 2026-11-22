@@ -1,3 +1,5 @@
+import { collectPinnedMemory, type PinnedMemoryOptions } from "../pinnedMemory.js";
+
 export interface MarkdownWikiEngineFile {
   path: string;
   content: string;
@@ -81,6 +83,8 @@ export interface MarkdownWikiEngineConfig {
   categorizePath?: (path: string) => string;
   summarizeContent?: (content: string) => string;
   clock?: () => string;
+  /** When set, lint warns if the pinned (always-loaded) tier is over budget or holds untrusted or missing pages. */
+  pinned?: PinnedMemoryOptions;
 }
 
 export interface MarkdownWikiSyncOptions {
@@ -333,6 +337,7 @@ class DefaultMarkdownWikiEngine implements MarkdownWikiEngine {
     issues.push(...this.checkSupportFiles());
     issues.push(...this.checkBrokenWikiLinks());
     issues.push(...this.checkRelationships());
+    issues.push(...this.checkPinnedMemory());
     return {
       generatedAt: this.nowIso(),
       issueCount: issues.length,
@@ -373,6 +378,44 @@ class DefaultMarkdownWikiEngine implements MarkdownWikiEngine {
       readRelationships: () => this.readRelationships(),
       renderIndex: (options) => this.renderIndex(options)
     };
+  }
+
+  private checkPinnedMemory(): MarkdownWikiIssue[] {
+    if (!this.config.pinned) return [];
+    const pinned = collectPinnedMemory(this.config.store.listFiles(), this.config.pinned);
+    const issues: MarkdownWikiIssue[] = [];
+    if (pinned.overBudget) {
+      issues.push({
+        id: "pinned-over-budget",
+        severity: "warning",
+        category: "pinned-memory",
+        file: this.config.pinned.prefix ?? pinned.omitted.find((o) => o.reason === "over_budget")?.path ?? "",
+        message: `Pinned memory needs ${pinned.requestedChars} characters but the budget is ${pinned.maxChars}; ${pinned.omitted.filter((o) => o.reason === "over_budget").length} page(s) are left out of every session.`,
+        suggestion: "Condense the pinned pages or move detail into regular pages that are searched on demand."
+      });
+    }
+    for (const omission of pinned.omitted) {
+      if (omission.reason === "untrusted") {
+        issues.push({
+          id: `pinned-untrusted-${omission.path}`,
+          severity: "warning",
+          category: "pinned-memory",
+          file: omission.path,
+          message: "Pinned page has untrusted provenance and is excluded from the always-loaded tier.",
+          suggestion: "Review the page; rewrite it from a trusted session if it should stay pinned."
+        });
+      } else if (omission.reason === "missing") {
+        issues.push({
+          id: `pinned-missing-${omission.path}`,
+          severity: "warning",
+          category: "pinned-memory",
+          file: omission.path,
+          message: "Pinned page does not exist.",
+          suggestion: "Create the page or remove it from the pinned paths."
+        });
+      }
+    }
+    return issues;
   }
 
   private checkSupportFiles(): MarkdownWikiIssue[] {

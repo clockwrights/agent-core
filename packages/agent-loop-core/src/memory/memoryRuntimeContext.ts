@@ -10,6 +10,7 @@ import {
   type MarkdownWikiMemoryRuntimeConfig,
   type MarkdownWikiWriteToolOptions
 } from "./markdown-wiki/index.js";
+import { loadPinnedMemory, type PinnedMemoryOptions } from "./pinnedMemory.js";
 import type { MemoryProvenanceSource } from "./provenance.js";
 
 export interface MemoryConfig {
@@ -29,6 +30,11 @@ export interface MemoryConfig {
    * `createUntrustedOriginTracker` for `origin`.
    */
   provenance?: MemoryProvenanceSource;
+  /**
+   * Always-loaded tier read from the `markdownWiki` store and returned as
+   * `pinnedMemory` on the context. Off when absent.
+   */
+  pinnedMemory?: PinnedMemoryOptions;
   toolAllow?: string[];
   toolDeny?: string[];
 }
@@ -74,12 +80,38 @@ export async function createMemoryRuntimeContext(config: MemoryConfig): Promise<
   const memoryPrompt = [runtime.buildPromptSection?.({ availableTools }) ?? "", buildMarkdownWikiMaintenancePrompt({ availableTools })]
     .filter((section) => section.trim())
     .join("\n");
-  const diagnostics = runtime.diagnostics?.() ?? [];
+  const diagnostics = [...(runtime.diagnostics?.() ?? [])];
+
+  let pinnedMemory: string | undefined;
+  if (config.pinnedMemory) {
+    if (!config.markdownWiki) {
+      diagnostics.push({ level: "warning", message: "pinnedMemory needs a markdownWiki store; no pinned memory loaded." });
+    } else {
+      const pinned = await loadPinnedMemory(config.markdownWiki.store, config.pinnedMemory);
+      pinnedMemory = pinned.block;
+      const overBudget = pinned.omitted.filter((o) => o.reason === "over_budget").map((o) => o.path);
+      const untrusted = pinned.omitted.filter((o) => o.reason === "untrusted").map((o) => o.path);
+      if (overBudget.length) {
+        diagnostics.push({
+          level: "warning",
+          message: `Pinned memory is over its ${pinned.maxChars}-character budget; left out: ${overBudget.join(", ")}.`
+        });
+      }
+      if (untrusted.length) {
+        diagnostics.push({
+          level: "warning",
+          message: `Pinned pages with untrusted provenance were left out: ${untrusted.join(", ")}.`
+        });
+      }
+    }
+  }
+
   return {
     runtime,
     toolDefinitions,
     memoryPrompt,
-    diagnostics
+    diagnostics,
+    ...(pinnedMemory !== undefined ? { pinnedMemory } : {})
   };
 }
 

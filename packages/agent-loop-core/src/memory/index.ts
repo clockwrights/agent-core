@@ -40,4 +40,13 @@ export type {
   MemoryProvenanceSource,
   UntrustedOriginTracker
 } from "./provenance.js";
+export {
+  collectPinnedMemory,
+  loadPinnedMemory
+} from "./pinnedMemory.js";
+export type {
+  PinnedMemory,
+  PinnedMemoryOmission,
+  PinnedMemoryOptions
+} from "./pinnedMemory.js";
 export * from "./markdown-wiki/index.js";

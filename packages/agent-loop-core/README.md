@@ -478,6 +478,16 @@ const memory = await createMemoryRuntimeContext({
 // run with onEvent: tracker.onEvent
 ```
 
+### Always-loaded (pinned) memory (opt-in)
+
+A few short pages — identity, standing preferences, key decisions — can be loaded in full into every session instead of being searched for. Because they reach every session, they get a hard size budget and the strictest gate.
+
+- `collectPinnedMemory(files, options)` / `loadPinnedMemory(asyncStore, options)` select pinned pages — explicit `paths` first, then every page under `prefix` (e.g. `"system/"`) in path order — and render them as one `<pinned-memory>` block (frontmatter stripped).
+- `maxChars` (default 4 000) is a hard budget: pages that do not fit are left out **whole** (never cut mid-page) and reported in `omitted` with `overBudget: true`.
+- Pages with **untrusted** provenance are excluded unless `allowUntrusted: true`.
+- With `pinnedMemory` in `createMemoryRuntimeContext`, the block is returned as `context.pinnedMemory` (plus warning diagnostics for left-out pages). Put it in the first user turn — e.g. prepend it to the prompt — rather than the system prompt, so memory updates do not invalidate the cached system prompt.
+- With `pinned` in the engine config, `lint()` warns (`pinned-memory` category) when the tier is over budget, holds untrusted pages, or lists missing ones.
+
 ### Wiring memory into the agent
 
 ```ts
