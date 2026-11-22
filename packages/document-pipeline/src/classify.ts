@@ -196,7 +196,8 @@ async function classifyGroup(
  * for known barcode / separator anchors.
  *
  * MRZ line: at least 30 consecutive chars matching [A-Z0-9<]
- * (TD1 = 30, TD2 = 36, TD3/passport = 44 chars per line)
+ * (TD1 = 30, TD2 = 36, TD3/passport = 44 chars per line).
+ * Segmentation uses a looser ≥ 20 boundary hint (`segment.ts`); see there.
  */
 const MRZ_LINE_RE = /^[A-Z][A-Z0-9<]{29,}$/m;
 

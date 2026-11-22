@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { UNSEGMENTED_FALLBACK_CONFIDENCE, segmentDocuments } from "../src/segment.js";
+import { classifyGroups } from "../src/classify.js";
 import type { DocumentUnit, UnitExtractionResult } from "../src/types.js";
 import type {
   PipelineLlmAdapter,
@@ -104,7 +105,7 @@ test("segment: MRZ in second unit following plain text → two structural groups
 // Separator-line structural detection
 // ---------------------------------------------------------------------------
 
-test("segment: separator line '---' → boundary, separator may be excluded", async () => {
+test("segment: separator line '---' → boundary after it; the separator unit stays in the group it closes", async () => {
   // 3 units: content / separator / content
   const result = await segmentDocuments({
     units: [makeUnit(1), makeUnit(2), makeUnit(3)],
@@ -116,12 +117,27 @@ test("segment: separator line '---' → boundary, separator may be excluded", as
     executionMode: "deterministic-first",
   });
 
-  // Structural detection should produce at least two groups
-  assert.equal(result.groups.length, 2);
-  // Units 1 and 3 must be in separate groups
-  const allIndices = result.groups.flatMap((g) => g.unitIndices);
-  assert.ok(allIndices.includes(1));
-  assert.ok(allIndices.includes(3));
+  // Only blank units are dropped; the separator unit closes the first group.
+  assert.deepEqual(result.groups.map((g) => g.unitIndices), [[1, 2], [3]]);
+});
+
+test("segment vs Tier A: a 20–29 char MRZ-like line is a boundary hint, not an identity document", async () => {
+  // Segmentation's MRZ hint needs ≥ 20 chars; Tier A classification needs ≥ 30
+  // (the shortest real MRZ line). Pinned so the two are only changed together.
+  const shortMrz = "IDUTOD231458907<<<<<<<"; // 22 chars
+  const units = [makeUnit(1), makeUnit(2)];
+  const extractions = [makeExtraction(1, "Cover letter"), makeExtraction(2, shortMrz)];
+
+  const segmented = await segmentDocuments({ units, extractions, executionMode: "deterministic-first" });
+  assert.deepEqual(segmented.groups.map((g) => g.unitIndices), [[1], [2]], "the short line starts a new group");
+
+  const [classified] = await classifyGroups({
+    groups: [segmented.groups[1]!],
+    units,
+    extractions,
+    executionMode: "deterministic-first",
+  });
+  assert.equal(classified!.label, "unknown", "Tier A does not read it as an MRZ");
 });
 
 test("segment: '===' separator also triggers boundary", async () => {

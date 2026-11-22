@@ -52,6 +52,7 @@ Every package is independently usable and has a single-line dependency story in 
 npm install
 npm run build      # build every package
 npm run test       # run every package's test script
+npm run typecheck  # type-check src and test files (tsx strips types, so tests are not checked by `test`); run after build
 ```
 
 ## Provenance
