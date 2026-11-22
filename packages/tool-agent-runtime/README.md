@@ -61,6 +61,10 @@ await runToolAgent(
 ```ts
 import {
   runToolAgent,
+  runAgent,
+  serializeRunState,
+  parseRunState,
+  RunStateError,
   ToolTimeoutError,
   AGENT_EVENT_VERSION,
   type AgentTool,
@@ -73,12 +77,14 @@ import {
   type ToolAgentBudget,
   type AgentEndReason,
   type AgentUsage,
+  type RunState,
+  type RunResult,
 } from "@maya-ai/tool-agent-runtime";
 ```
 
 ### `runToolAgent(input, emit)`
 
-Run a multi-turn tool loop starting from a single user prompt.
+Run a multi-turn tool loop from a prompt, a prior conversation (`messages`) or a saved state (`resumeFrom`). `runAgent(input, emit?)` runs the same loop and resolves with the result — see [Conversations, saved state and resume](#conversations-saved-state-and-resume).
 
 `ToolAgentRunInput` fields:
 
@@ -86,9 +92,12 @@ Run a multi-turn tool loop starting from a single user prompt.
 |---|---|---|
 | `systemPrompt` | `string` | Required. |
 | `model` | pi-ai `Model<any>` | Required. |
-| `prompt` | `string` | Initial user turn. |
+| `prompt` | `string?` | New user turn. Required unless `messages` or `resumeFrom` is given; with them it is appended after the prior conversation. |
+| `messages` | `AgentMessage[]?` | Prior conversation to continue from (counters start at zero). Not combinable with `resumeFrom`. |
+| `resumeFrom` | `RunState?` | Saved state to continue from; counters and usage carry over. |
+| `onCheckpoint` | `(state: RunState) => void \| Promise<void>`? | Awaited after every step that continues the run and once at the end. A throw ends the run with reason `error`. |
 | `tools` | `AgentTool<any>[]` | Tools the model can call. |
-| `images` | `ImageContent[]?` | Optional multimodal attachments appended to the first user message. |
+| `images` | `ImageContent[]?` | Optional multimodal attachments for the `prompt` turn (requires `prompt`). |
 | `reasoning` | `ThinkingLevel?` | Forwarded to pi-ai's `streamSimple`. Omit to disable extended thinking. |
 | `signal` | `AbortSignal?` | Forwarded to streaming and to every tool's `execute`. |
 | `apiKey`, `sessionId`, `transport`, `maxTokens`, `maxRetryDelayMs` | | Passed through to `streamSimple`. `maxTokens` caps output tokens per model call. |
@@ -103,7 +112,7 @@ Run a multi-turn tool loop starting from a single user prompt.
 
 Limits are validated up front: a non-positive or non-integer value rejects with a `RangeError` before any event is emitted.
 
-Returns `Promise<void>`. All output is delivered through the `emit` callback (`AgentEventSink`).
+`runToolAgent` returns `Promise<void>`; all output is delivered through the `emit` callback (`AgentEventSink`), and `agent_end.state` carries the run's state. `runAgent` returns `Promise<RunResult>`: `{ state, reason, usage, messages, text, errorMessage? }`, where `text` is the last assistant message's text.
 
 ### `AgentTool`
 
@@ -150,7 +159,7 @@ Stream of lifecycle, message, and tool events:
 
 | Event | When |
 |---|---|
-| `agent_start` / `agent_end` | Run begins / completes. `agent_start.eventVersion` is the contract version. `agent_end` includes the full message list, `reason` (`AgentEndReason`), summed `usage`, and `errorMessage` when the reason is `error` or `aborted`. |
+| `agent_start` / `agent_end` | Run begins / completes. `agent_start.eventVersion` is the contract version; `agent_start.resumed` is true when the run started from `messages` or `resumeFrom`. `agent_end` includes the full message list, `reason` (`AgentEndReason`), summed `usage`, `errorMessage` when the reason is `error` or `aborted`, and the serializable `state`. |
 | `turn_start` / `turn_end` | Each assistant turn (model call + any tool batch). `turn_end.usage` is that model call's usage. |
 | `message_start` / `message_update` / `message_end` | Streaming text/thinking/tool-call deltas for each assistant or tool-result message. |
 | `tool_execution_start` / `tool_execution_update` / `tool_execution_end` | Per tool call. `_start` fires when the tool actually starts. `_update` is emitted when a tool calls its `onUpdate` callback. `_end` carries `isError`. |
@@ -161,7 +170,7 @@ Stream of lifecycle, message, and tool events:
 
 ### Contract versioning
 
-`AgentEvent`, `AgentTool` and the tool-result shapes are a versioned contract. `AGENT_EVENT_VERSION` (currently `1`) is emitted on every `agent_start` as `eventVersion`. Additive changes — new optional fields, new event types — keep the version; consumers should ignore fields and event types they don't know. Removing or renaming a field, or changing its meaning, bumps the version. Fields documented as always set by `runToolAgent` (`eventVersion`, `reason`, `usage`) are optional in the TypeScript types only so that hand-built events stay valid.
+`AgentEvent`, `AgentTool` and the tool-result shapes are a versioned contract. `AGENT_EVENT_VERSION` (currently `1`) is emitted on every `agent_start` as `eventVersion`. Additive changes — new optional fields, new event types — keep the version; consumers should ignore fields and event types they don't know. Removing or renaming a field, or changing its meaning, bumps the version. Fields documented as always set by `runToolAgent` (`eventVersion`, `resumed`, `reason`, `usage`, `state`) are optional in the TypeScript types only so that hand-built events stay valid.
 
 ## Loop semantics
 
@@ -195,6 +204,29 @@ await runToolAgent({
 - **`prepareStep`** runs before every model call, including the first. Overrides apply to that step only and are not persisted: `messages` replaces what the model sees (for pruning or clearing old tool results) without changing the run's transcript; `activeTools` narrows both the tools offered and the tools that can execute in that step (a call outside the set gets a "not found" error result; unknown names are ignored). Tool choice is not exposed: pi-ai's generic stream options have no provider-neutral tool-choice field.
 - `composePrepareSteps(a, b, …)` combines hooks: they run in order and each sees the previous hook's `messages`; for `model`, `systemPrompt` and `reasoning` the last hook that sets one wins, and `activeTools` lists are intersected.
 - A hook that throws ends the run with reason `error` and `errorMessage` `"prepareStep failed: …"` / `"stopWhen failed: …"`. When `prepareStep` fails no model call happened, so `agent_end` follows the open `turn_start` directly.
+
+## Conversations, saved state and resume
+
+```ts
+import { runAgent, serializeRunState, parseRunState } from "@maya-ai/tool-agent-runtime";
+
+const first = await runAgent({ systemPrompt, model, tools, prompt: "Plan the trip", maxTurns: 20 });
+await db.save(runId, serializeRunState(first.state));
+
+// later, possibly in another process, with the same or different model/tools:
+const saved = parseRunState(await db.load(runId));
+const next = await runAgent({ systemPrompt, model, tools, resumeFrom: saved, prompt: "Now book it", maxTurns: 20 });
+```
+
+- **`RunState`** is `{ version: 1, messages, turns, toolCallsExecuted, usage, endReason?, errorMessage?, metadata? }`: progress only. Model, tools, API keys, system prompt, hooks and limits are not in it — pass them on every call. `metadata` is yours; the runtime copies it through.
+- **`serializeRunState(state)`** returns JSON text and throws `RunStateError` if anything would be lost in JSON (functions, `Date`/`Map` and other class instances, `NaN`, `undefined` inside arrays, cycles), naming the path and the tool. Tools whose results should survive a resume must return JSON-safe `details`.
+- **`parseRunState(jsonOrValue)`** validates and copies; a state from a newer runtime (`version` > 1) is rejected with a clear error.
+- **Starting transcript:** `prompt` alone works as before. `messages` continues a conversation with counters at zero; add `prompt` to append a new user turn. `resumeFrom` continues a saved run with counters and usage carried over. `messages` + `resumeFrom` together, or none of `prompt`/`messages`/`resumeFrom`, is a `RangeError`.
+- **What happens next** depends on the last message: a user or tool-result message → model call; an assistant message whose tool calls lack results → only the missing calls run (before any new `prompt` is appended), then a model call; a finished assistant answer with no new `prompt` → the run ends at once with `completed`; a trailing failed or aborted assistant reply is dropped so the model retries that turn.
+- **Limits are cumulative across resumes:** `maxTurns`, `maxToolCalls` and `budget` count the carried totals, and a run whose limit is already used up ends without a model call. For a fresh allowance, pass `messages: state.messages` instead of `resumeFrom`.
+- **Turn numbers continue:** `prepareStep`/`stopWhen` see `turn = state.turns + 1`; `steps` holds only this invocation's steps.
+- **Tool calls may run again after a crash.** Calls that already have a result are never re-run, but a tool that finished its work without its result being saved will run again on resume. Make side-effecting tools idempotent, for example by keying on the `toolCallId` they receive (stable across resumes).
+- **Checkpoints:** `onCheckpoint` is awaited after each step that continues the run (before the next model call) and once at the end, so a durability layer can persist before the loop moves on.
 
 ## Cancellation
 

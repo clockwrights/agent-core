@@ -12,8 +12,8 @@ import { AGENT_EVENT_VERSION, runToolAgent, type AgentEvent, type AgentTool } fr
 import { collectEvents, createReplayModel, replyText, replyToolCalls } from "../src/testing.js";
 
 const EXPECTED_KEYS: Record<AgentEvent["type"], string[]> = {
-  agent_start: ["eventVersion", "type"],
-  agent_end: ["messages", "reason", "type", "usage"],
+  agent_start: ["eventVersion", "resumed", "type"],
+  agent_end: ["messages", "reason", "state", "type", "usage"],
   turn_start: ["type"],
   turn_end: ["message", "toolResults", "type", "usage"],
   message_start: ["message", "type"],
@@ -64,5 +64,5 @@ test("agent_end carries errorMessage only for error/aborted runs", async () => {
   replay.dispose();
 
   const end = events.ofType("agent_end")[0]!;
-  assert.deepEqual(Object.keys(end).sort(), ["errorMessage", "messages", "reason", "type", "usage"]);
+  assert.deepEqual(Object.keys(end).sort(), ["errorMessage", "messages", "reason", "state", "type", "usage"]);
 });

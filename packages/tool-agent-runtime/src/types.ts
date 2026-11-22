@@ -9,6 +9,7 @@ import type {
   Usage,
 } from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "@earendil-works/pi-ai";
+import type { RunState } from "./runState.js";
 
 /**
  * Version of the `AgentEvent` / `AgentTool` / tool-result contract.
@@ -127,6 +128,8 @@ export type AgentEvent =
       type: "agent_start";
       /** Contract version (`AGENT_EVENT_VERSION`). Always set by runToolAgent. */
       eventVersion?: number;
+      /** True when the run started from `messages` or `resumeFrom`. Always set by runToolAgent. */
+      resumed?: boolean;
     }
   | {
       type: "agent_end";
@@ -137,6 +140,8 @@ export type AgentEvent =
       usage?: AgentUsage;
       /** The model's error message when `reason` is "error" or "aborted". */
       errorMessage?: string;
+      /** Serializable state of the run; pass as `resumeFrom` to continue. Always set by runToolAgent. */
+      state?: RunState;
     }
   | { type: "turn_start" }
   | {

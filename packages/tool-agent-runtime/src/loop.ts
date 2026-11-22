@@ -37,11 +37,13 @@ import {
   type Transport,
 } from "@earendil-works/pi-ai";
 import { ToolTimeoutError } from "./errors.js";
+import { parseRunState, RUN_STATE_VERSION, type RunState } from "./runState.js";
 import { selectActiveTools, type PrepareStep, type StopCondition } from "./steps.js";
 import {
   AGENT_EVENT_VERSION,
   type AgentEndReason,
   type AgentEvent,
+  type AgentMessage,
   type AgentStep,
   type AgentTool,
   type AgentToolResult,
@@ -68,10 +70,27 @@ export interface ToolAgentRunInput {
    */
   reasoning?: ThinkingLevel;
   tools: AgentTool<any>[];
-  /** Text of the initial user turn. */
-  prompt: string;
-  /** Optional image attachments for multimodal prompts. */
+  /**
+   * Text of a new user turn, appended after `messages` / `resumeFrom` when
+   * those are given. Required unless `messages` or `resumeFrom` is given.
+   */
+  prompt?: string;
+  /** Optional image attachments for the `prompt` turn (requires `prompt`). */
   images?: ImageContent[];
+  /** Prior conversation; the run continues from it. Not combinable with `resumeFrom`. */
+  messages?: AgentMessage[];
+  /**
+   * Continue a run from a saved state: transcript, turn and tool-call
+   * counters and usage carry over, so limits count across invocations.
+   * Pending tool calls (no result yet) are executed first.
+   */
+  resumeFrom?: RunState;
+  /**
+   * Awaited after every step that continues the run (before the next model
+   * call) and once when the run ends, with the current state. A throw ends
+   * the run with reason "error".
+   */
+  onCheckpoint?: (state: RunState) => void | Promise<void>;
   signal?: AbortSignal;
   apiKey?: string;
   sessionId?: string;
@@ -122,26 +141,55 @@ export interface ToolAgentRunInput {
   prepareStep?: PrepareStep;
 }
 
+/** Result of `runAgent`. */
+export interface RunResult {
+  /** Serializable state; pass as `resumeFrom` to continue the run. */
+  state: RunState;
+  reason: AgentEndReason;
+  /** Usage summed over the whole run (all invocations). */
+  usage: AgentUsage;
+  /** Full transcript. */
+  messages: AgentMessage[];
+  /** Text of the last assistant message ("" when there is none). */
+  text: string;
+  /** The error message when `reason` is "error" or "aborted". */
+  errorMessage?: string;
+}
+
 /**
- * Run a tool-agent loop starting from a single user prompt.
+ * Run a tool-agent loop from a prompt, a prior conversation (`messages`) or a
+ * saved state (`resumeFrom`).
  *
  * Emits AgentEvent notifications throughout the run. If the signal is aborted
  * the current LLM call or tool execution terminates as soon as possible;
- * agent_end is still emitted with whatever messages accumulated.
+ * agent_end is still emitted with whatever messages accumulated, and carries
+ * the run's `state`.
  */
 export async function runToolAgent(input: ToolAgentRunInput, emit: AgentEventSink): Promise<void> {
+  await runLoop(input, emit);
+}
+
+/**
+ * Same loop as `runToolAgent`, resolving with the run's result and state.
+ * `emit` is optional.
+ */
+export function runAgent(input: ToolAgentRunInput, emit?: AgentEventSink): Promise<RunResult> {
+  return runLoop(input, emit ?? (() => {}));
+}
+
+async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<RunResult> {
   validateLimits(input);
+  validateStart(input);
+  const resumeFrom = input.resumeFrom === undefined ? undefined : parseRunState(input.resumeFrom);
 
-  const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: input.prompt }];
-  if (input.images?.length) userContent.push(...input.images);
+  // Starting transcript. A trailing failed/aborted model reply is dropped so
+  // the model retries that turn (providers also reject such messages).
+  const messages: Message[] = (resumeFrom?.messages ?? input.messages ?? []).slice();
+  while (isFailedReply(messages[messages.length - 1])) messages.pop();
+  const resumed = input.messages !== undefined || input.resumeFrom !== undefined;
 
-  const userMessage: Message = { role: "user", content: userContent, timestamp: Date.now() };
-  const messages: Message[] = [userMessage];
-
-  emit({ type: "agent_start", eventVersion: AGENT_EVENT_VERSION });
+  emit({ type: "agent_start", eventVersion: AGENT_EVENT_VERSION, resumed });
   emit({ type: "turn_start" });
-  emit({ type: "message_start", message: userMessage });
-  emit({ type: "message_end", message: userMessage });
 
   const streamOptions: SimpleStreamOptions = {
     ...(input.reasoning ? { reasoning: input.reasoning } : {}),
@@ -162,15 +210,135 @@ export async function runToolAgent(input: ToolAgentRunInput, emit: AgentEventSin
     batchStrategy: input.toolBatchStrategy ?? "serialize-batch",
   };
 
-  const totalUsage = emptyUsage();
+  const totalUsage = resumeFrom ? cloneUsage(resumeFrom.usage) : emptyUsage();
   const steps: AgentStep[] = [];
   const stopConditions = input.stopWhen === undefined ? [] : [input.stopWhen].flat();
-  let turns = 0;
-  let toolCallsExecuted = 0;
-  let reason: AgentEndReason;
+  let turns = resumeFrom?.turns ?? 0;
+  let toolCallsExecuted = resumeFrom?.toolCallsExecuted ?? 0;
+  let reason: AgentEndReason | undefined;
   let errorMessage: string | undefined;
 
-  while (true) {
+  const snapshot = (end?: AgentEndReason): RunState => {
+    const state: RunState = {
+      version: RUN_STATE_VERSION,
+      messages: messages.slice(),
+      turns,
+      toolCallsExecuted,
+      usage: cloneUsage(totalUsage),
+    };
+    if (end !== undefined) state.endReason = end;
+    if (end !== undefined && errorMessage !== undefined) state.errorMessage = errorMessage;
+    if (resumeFrom?.metadata !== undefined) state.metadata = resumeFrom.metadata;
+    return state;
+  };
+
+  /** Run the checkpoint hook; on failure set the error and return false. */
+  const checkpoint = async (state: RunState): Promise<boolean> => {
+    if (!input.onCheckpoint) return true;
+    try {
+      await input.onCheckpoint(state);
+      return true;
+    } catch (err) {
+      errorMessage = `onCheckpoint failed: ${err instanceof Error ? err.message : String(err)}`;
+      return false;
+    }
+  };
+
+  /**
+   * Execute `toolCalls` of `assistantMessage` (all of them after a model
+   * call; only the missing ones when resuming), record the step, and decide
+   * whether the run stops. `existingResults` are results already in the
+   * transcript for this assistant message.
+   */
+  const finishTurn = async (
+    assistantMessage: AssistantMessage,
+    toolCalls: ToolCall[],
+    turnUsage: AgentUsage,
+    existingResults: ToolResultMessage[],
+  ): Promise<AgentEndReason | undefined> => {
+    const remaining = input.maxToolCalls === undefined ? toolCalls.length : input.maxToolCalls - toolCallsExecuted;
+    const allowed = Math.max(0, Math.min(toolCalls.length, remaining));
+    const blockedMessage =
+      allowed < toolCalls.length
+        ? `Tool call limit of ${input.maxToolCalls} reached; this call was not executed.`
+        : undefined;
+
+    const turnTools = currentTools ?? input.tools;
+    const batch = await executeToolCalls(toolCalls, allowed, blockedMessage, { ...execution, tools: turnTools });
+    toolCallsExecuted += allowed;
+
+    for (const r of batch.messages) {
+      messages.push(r);
+      emit({ type: "message_start", message: r });
+      emit({ type: "message_end", message: r });
+    }
+    const toolResults = [...existingResults, ...batch.messages];
+    emit({ type: "turn_end", message: assistantMessage, toolResults, usage: turnUsage });
+    steps.push({ turn: turns, message: assistantMessage, toolResults, usage: turnUsage });
+
+    let stop: AgentEndReason | undefined = batch.terminate
+      ? "terminated"
+      : allowed < toolCalls.length
+        ? "max_tool_calls"
+        : undefined;
+    if (!stop && stopConditions.length > 0) {
+      try {
+        for (const condition of stopConditions) {
+          if (await condition({ steps: steps.slice(), totalUsage: cloneUsage(totalUsage) })) {
+            stop = "stop_condition";
+            break;
+          }
+        }
+      } catch (err) {
+        stop = "error";
+        errorMessage = `stopWhen failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+    stop ??= limitReached();
+    if (stop) return stop;
+    if (!(await checkpoint(snapshot()))) return "error";
+    emit({ type: "turn_start" });
+    return undefined;
+  };
+
+  const limitReached = (): AgentEndReason | undefined =>
+    input.maxTurns !== undefined && turns >= input.maxTurns
+      ? "max_turns"
+      : budgetReached(input.budget, totalUsage)
+        ? "budget"
+        : undefined;
+
+  // Tools offered on the latest model call (prepareStep may narrow them);
+  // pending calls from a saved state run against the full tool list.
+  let currentTools: AgentTool<any>[] | undefined;
+
+  // 1. Pending tool calls from a saved conversation (pause or crash in the
+  //    middle of a batch): run only the calls that have no result yet.
+  const pending = findPendingToolCalls(messages);
+  if (pending) {
+    reason = await finishTurn(pending.message, pending.missing, emptyUsage(), pending.existingResults);
+  }
+
+  // 2. The new user turn.
+  if (reason === undefined && input.prompt !== undefined) {
+    const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: input.prompt }];
+    if (input.images?.length) userContent.push(...input.images);
+    const userMessage: Message = { role: "user", content: userContent, timestamp: Date.now() };
+    messages.push(userMessage);
+    emit({ type: "message_start", message: userMessage });
+    emit({ type: "message_end", message: userMessage });
+  }
+
+  // 3. A finished conversation with nothing new to answer ends at once.
+  if (reason === undefined) {
+    const last = messages[messages.length - 1];
+    if (last?.role === "assistant" && !last.content.some((c) => c.type === "toolCall")) reason = "completed";
+  }
+
+  // 4. Limits already used up by earlier invocations: no further model call.
+  if (reason === undefined && turns > 0) reason = limitReached();
+
+  while (reason === undefined) {
     let prepared;
     try {
       prepared = input.prepareStep
@@ -184,6 +352,7 @@ export async function runToolAgent(input: ToolAgentRunInput, emit: AgentEventSin
       break;
     }
     const stepTools = selectActiveTools(input.tools, prepared?.activeTools);
+    currentTools = stepTools;
     const stepStreamOptions: SimpleStreamOptions =
       prepared?.reasoning === undefined ? streamOptions : { ...streamOptions, reasoning: prepared.reasoning };
     const context: Context = {
@@ -218,53 +387,13 @@ export async function runToolAgent(input: ToolAgentRunInput, emit: AgentEventSin
       break;
     }
 
-    const remaining = input.maxToolCalls === undefined ? toolCalls.length : input.maxToolCalls - toolCallsExecuted;
-    const allowed = Math.max(0, Math.min(toolCalls.length, remaining));
-    const blockedMessage =
-      allowed < toolCalls.length
-        ? `Tool call limit of ${input.maxToolCalls} reached; this call was not executed.`
-        : undefined;
+    reason = await finishTurn(assistantMessage, toolCalls, turnUsage, []);
+  }
 
-    const batch = await executeToolCalls(toolCalls, allowed, blockedMessage, { ...execution, tools: stepTools });
-    toolCallsExecuted += allowed;
-
-    for (const r of batch.messages) {
-      messages.push(r);
-      emit({ type: "message_start", message: r });
-      emit({ type: "message_end", message: r });
-    }
-    emit({ type: "turn_end", message: assistantMessage, toolResults: batch.messages, usage: turnUsage });
-    steps.push({ turn: turns, message: assistantMessage, toolResults: batch.messages, usage: turnUsage });
-
-    let stop: AgentEndReason | undefined = batch.terminate
-      ? "terminated"
-      : allowed < toolCalls.length
-        ? "max_tool_calls"
-        : undefined;
-    if (!stop && stopConditions.length > 0) {
-      try {
-        for (const condition of stopConditions) {
-          if (await condition({ steps: steps.slice(), totalUsage: { ...totalUsage, cost: { ...totalUsage.cost } } })) {
-            stop = "stop_condition";
-            break;
-          }
-        }
-      } catch (err) {
-        stop = "error";
-        errorMessage = `stopWhen failed: ${err instanceof Error ? err.message : String(err)}`;
-      }
-    }
-    stop ??=
-      input.maxTurns !== undefined && turns >= input.maxTurns
-        ? "max_turns"
-        : budgetReached(input.budget, totalUsage)
-          ? "budget"
-          : undefined;
-    if (stop) {
-      reason = stop;
-      break;
-    }
-    emit({ type: "turn_start" });
+  let finalState = snapshot(reason);
+  if (!(await checkpoint(finalState))) {
+    reason = "error";
+    finalState = snapshot(reason);
   }
 
   emit({
@@ -273,7 +402,67 @@ export async function runToolAgent(input: ToolAgentRunInput, emit: AgentEventSin
     reason,
     usage: totalUsage,
     ...(errorMessage !== undefined ? { errorMessage } : {}),
+    state: finalState,
   });
+
+  const result: RunResult = {
+    state: finalState,
+    reason,
+    usage: cloneUsage(totalUsage),
+    messages: messages.slice(),
+    text: lastAssistantText(messages),
+  };
+  if (errorMessage !== undefined) result.errorMessage = errorMessage;
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Starting transcript
+// ---------------------------------------------------------------------------
+
+function validateStart(input: ToolAgentRunInput): void {
+  if (input.resumeFrom !== undefined && input.messages !== undefined) {
+    throw new RangeError("Pass either messages or resumeFrom, not both");
+  }
+  if (input.prompt === undefined && input.messages === undefined && input.resumeFrom === undefined) {
+    throw new RangeError("One of prompt, messages or resumeFrom is required");
+  }
+  if (input.images?.length && input.prompt === undefined) {
+    throw new RangeError("images require a prompt to attach them to");
+  }
+}
+
+function isFailedReply(message: Message | undefined): boolean {
+  return message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted");
+}
+
+/**
+ * The last assistant message's tool calls that have no result yet, when only
+ * tool results follow it. Undefined when nothing is pending.
+ */
+function findPendingToolCalls(
+  messages: Message[],
+): { message: AssistantMessage; missing: ToolCall[]; existingResults: ToolResultMessage[] } | undefined {
+  let index = messages.length - 1;
+  while (index >= 0 && messages[index]!.role === "toolResult") index--;
+  const message = messages[index];
+  if (message?.role !== "assistant") return undefined;
+  const existingResults = messages.slice(index + 1) as ToolResultMessage[];
+  const answered = new Set(existingResults.map((r) => r.toolCallId));
+  const missing = message.content.filter((c): c is ToolCall => c.type === "toolCall" && !answered.has(c.id));
+  return missing.length > 0 ? { message, missing, existingResults } : undefined;
+}
+
+function lastAssistantText(messages: Message[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!;
+    if (message.role !== "assistant") continue;
+    return message.content
+      .filter((c): c is TextContent => c.type === "text")
+      .map((c) => c.text)
+      .join("");
+  }
+  return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +505,10 @@ function emptyUsage(): AgentUsage {
     totalTokens: 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
+}
+
+function cloneUsage(usage: AgentUsage): AgentUsage {
+  return { ...usage, cost: { ...usage.cost } };
 }
 
 /** Copy of a message's usage; providers that report none count as zero. */

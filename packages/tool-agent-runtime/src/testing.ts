@@ -410,12 +410,21 @@ function isCassetteStep(value: unknown): value is CassetteStep {
 
 /**
  * Deep copy of a context. Tools are reduced to their model-facing fields:
- * runtime tools carry functions (`execute`), which cannot be cloned.
+ * runtime tools carry functions (`execute`), which cannot be cloned. Tool
+ * result `details` (never sent to the model) are kept by reference when they
+ * cannot be cloned (e.g. they hold a function).
  */
 function snapshotContext(context: Context): Context {
   return {
     systemPrompt: context.systemPrompt,
-    messages: structuredClone(context.messages),
+    messages: context.messages.map((message) => {
+      try {
+        return structuredClone(message);
+      } catch (err) {
+        if (message.role !== "toolResult") throw err;
+        return { ...structuredClone({ ...message, details: undefined }), details: message.details };
+      }
+    }),
     tools: context.tools?.map(({ name, description, parameters }) => ({
       name,
       description,
