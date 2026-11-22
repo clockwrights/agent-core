@@ -10,6 +10,8 @@ The pipeline is provider-neutral. The LLM, the OCR engine, the policy registry, 
 npm install @maya-ai/document-pipeline
 ```
 
+**Requires Node.js 22 or newer** (the `file-type` dependency used for MIME sniffing needs it).
+
 Optional peer dependencies (declared as `peerDependencies` with `optional: true`):
 
 | Package | Needed for |

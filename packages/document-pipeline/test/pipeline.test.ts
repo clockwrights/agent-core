@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { pngBuffer } from "./png-fixture.js";
 import { runDocumentPipeline } from "../src/pipeline.js";
 import {
   DocumentPolicyRegistry,
@@ -18,9 +19,6 @@ function pdfBuffer(extraBytes = 200): Buffer {
   return Buffer.concat([header, Buffer.alloc(extraBytes)]);
 }
 
-function pngBuffer(): Buffer {
-  return Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...Array(50).fill(0)]);
-}
 
 function textBuffer(content = "Hello world"): Buffer {
   return Buffer.from(content, "utf8");
