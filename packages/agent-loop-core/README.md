@@ -62,6 +62,12 @@ import {
   type ToolSource,
   type ToolRisk,
 
+  // approval policy from registry metadata (a beforeToolCall hook)
+  createToolApprovalPolicy,
+  effectiveToolRisk,
+  skillAllowedTools,
+  type ToolApprovalPolicyOptions,
+
   // MCP
   normalizeMcpConfig,
   createMcpRuntime,
@@ -246,6 +252,36 @@ await runToolAgent({ …, tools, toolBatchStrategy: "sequential-barriers" }, emi
 
 Without the option, tools keep their own `executionMode`.
 
+### Approval from risk (opt-in)
+
+`createToolApprovalPolicy(definitions, options?)` turns registry metadata into a `beforeToolCall` hook for tool-agent-runtime's approval flow (see its "Tool approval hooks"). By default read tools run, and write and external tools pause the run until a person approves them:
+
+```ts
+const definitions = [...domainTools, ...mcpTools, ...skillTools];
+const tracker = createUntrustedOriginTracker(externalContentToolNames(definitions));
+const beforeToolCall = createToolApprovalPolicy(definitions, {
+  risk: { external: "allow" },              // default: read allow, write ask, external ask
+  tools: { delete_account: "deny" },         // per-tool rules, final
+  preApproved: skillAllowedTools(skills),    // run without asking
+  untrusted: tracker,                        // ask for write/external tools once the session read untrusted content
+});
+const adapter = createRuntimeToolLlmAdapter({ model });
+await adapter.runToolAgent({ …, tools: resolveTools(definitions, policy), beforeToolCall, onEvent: tracker.onEvent });
+```
+
+For each call:
+
+1. A `tools` rule for the name decides. It is final.
+2. A tool missing from `definitions` gets `unknownTools` (default `"ask"`).
+3. A name in `preApproved` is allowed; otherwise the action for its risk applies (`risk`, defaults in `DEFAULT_RISK_APPROVAL`).
+4. An "allow" from step 3 becomes "ask" when the tool's MCP server marks it `destructiveHint: true`, or while `untrusted.origin()` is not `"trusted"` and the risk is in `escalateWhenUntrusted` (default `["write", "external"]`).
+
+"Ask" decisions carry a `reason` and JSON `data` `{ rule, risk?, source?, mcpServer?, untrustedSources? }`, which end up in `state.interruptions`. "Deny" sends the model `Tool "<name>" is not allowed by the approval policy.` Invalid actions or risks in the options are a `RangeError`.
+
+**MCP annotations are claims, not guarantees.** `createMcpToolDefinitions` records each tool's server as `metadata.mcpServer` and its explicit boolean hints as `metadata.annotations`; MCP tools keep risk `external`. By default hints only add caution. To let `readOnlyHint: true` lower a tool's risk to `read` (so it runs without asking), list the servers you trust: `trustReadOnlyHints: ["docs"]` (or `true` for every tool). `effectiveToolRisk(metadata, { trustReadOnlyHints })` gives the risk the policy uses.
+
+**Skill pre-approvals.** `skillAllowedTools(skills)` collects the exact tool names from the skills' `allowed-tools`; pattern entries such as `Bash(git:*)` are left out. Pass only the skills you mean to trust: a skill file can name any tool.
+
 ### Clearing stale tool results
 
 Long runs accumulate tool output the model no longer needs. `createToolResultClearing(options?)` returns a `prepareStep` hook (see tool-agent-runtime) that replaces old tool results with short stubs in what the model sees; the run's transcript is unchanged.
@@ -326,7 +362,7 @@ Supported transports: **stdio**, **SSE**, **streamable-http**.
 |---|---|
 | `normalizeMcpConfig(raw)` | Validate a JSON-shaped MCP config; returns `{ config, diagnostics }`. |
 | `createMcpRuntime({ enabled, config })` | Connect to configured servers; exposes `getCatalog()`, `callTool()`, `dispose()`. |
-| `createMcpToolDefinitions(runtime)` | Turn the runtime catalog into `RegisteredTool[]` (source `mcp`, risk `external`). |
+| `createMcpToolDefinitions(runtime)` | Turn the runtime catalog into `RegisteredTool[]` (source `mcp`, risk `external`, plus `mcpServer` and the tool's annotation hints). |
 | `createMcpRegistryPreview({...})` | Dev/test helper that lists registered + policy-resolved tools. |
 | `buildMcpAgentToolName(server, tool)` | The deterministic naming function. |
 
@@ -343,13 +379,13 @@ Skills are tiny `SKILL.md` files describing a reusable procedure. `loadSkills` s
 name: review-package
 description: Review a documentation package for completeness.
 license: MIT                      # optional
-allowed-tools: read_skill_file    # optional, space-separated (informational for now)
+allowed-tools: read_skill_file    # optional, space-separated (pre-approvals, see skillAllowedTools)
 ---
 
 Step-by-step instructions for the model…
 ```
 
-Required frontmatter keys: `name`, `description`. Optional keys `license`, `compatibility` and `allowed-tools` are parsed onto the entry (`allowedTools` as a list); each entry also records its folder as `directory`. Files larger than `maxSkillFileBytes` (default 128 KB) are skipped with a diagnostic.
+Required frontmatter keys: `name`, `description`. Optional keys `license`, `compatibility` and `allowed-tools` are parsed onto the entry (`allowedTools` as a list; nothing is pre-approved unless you pass `skillAllowedTools(skills)` to `createToolApprovalPolicy`); each entry also records its folder as `directory`. Files larger than `maxSkillFileBytes` (default 128 KB) are skipped with a diagnostic.
 
 Names are checked against the [Agent Skills](https://agentskills.io/specification) rules: 1–64 characters, lowercase letters, digits and single hyphens (not at the start or end), matching the skill's folder name; descriptions up to 1,024 characters. Violations are reported as `warning` diagnostics and the skill still loads; set `strictValidation: true` to skip such skills instead. `validateSkillEntry(entry)` exposes the same checks.
 

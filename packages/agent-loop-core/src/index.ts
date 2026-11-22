@@ -72,6 +72,18 @@ export type {
   ToolLlmAdapter
 } from "./toolAgentTypes.js";
 export {
+  createToolApprovalPolicy,
+  DEFAULT_RISK_APPROVAL,
+  effectiveToolRisk,
+  skillAllowedTools
+} from "./toolApproval.js";
+export type {
+  EffectiveRiskOptions,
+  ToolApprovalAction,
+  ToolApprovalPolicyOptions,
+  ToolApprovalRule
+} from "./toolApproval.js";
+export {
   defaultToolPolicy,
   executionModeForRisk,
   isToolAllowed,
@@ -94,6 +106,7 @@ export type {
 export type {
   RegisteredTool,
   ResolveToolsOptions,
+  ToolAnnotations,
   ToolMetadata,
   ToolPolicy,
   ToolRisk,

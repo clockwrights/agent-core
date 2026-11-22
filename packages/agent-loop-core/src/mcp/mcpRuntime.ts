@@ -5,6 +5,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { FetchLike, Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { McpConfig, McpDiagnostic, McpHttpServerConfig, McpServerConfig, McpStdioServerConfig, McpTransport } from "./mcpConfig.js";
+import type { ToolAnnotations } from "../toolRegistry.js";
 
 export interface McpRuntimeOptions {
   enabled: boolean;
@@ -25,6 +26,8 @@ export interface McpToolCatalogEntry {
   title?: string;
   description?: string;
   inputSchema: Tool["inputSchema"];
+  /** The tool's explicit boolean annotation hints, when it declares any. */
+  annotations?: ToolAnnotations;
 }
 
 export interface McpToolCatalog {
@@ -149,7 +152,8 @@ async function buildCatalog(input: {
           toolName: tool.name,
           title: tool.title,
           description: tool.description,
-          inputSchema: tool.inputSchema
+          inputSchema: tool.inputSchema,
+          ...annotationHints(tool.annotations)
         });
       }
     } catch (error) {
@@ -296,6 +300,19 @@ function createCatalog(
     tools,
     diagnostics: [...diagnostics]
   };
+}
+
+const ANNOTATION_HINTS = ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] as const;
+
+/** Copies only boolean hint values; anything else a server sends is dropped. */
+function annotationHints(annotations: unknown): { annotations?: ToolAnnotations } {
+  if (!annotations || typeof annotations !== "object") return {};
+  const hints: ToolAnnotations = {};
+  for (const key of ANNOTATION_HINTS) {
+    const value = (annotations as Record<string, unknown>)[key];
+    if (typeof value === "boolean") hints[key] = value;
+  }
+  return Object.keys(hints).length ? { annotations: hints } : {};
 }
 
 function isStdioServerConfig(server: McpServerConfig): server is McpStdioServerConfig {

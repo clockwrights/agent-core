@@ -33,6 +33,8 @@ export async function createMcpToolDefinitions(
     metadata: {
       source: "mcp",
       risk: "external",
+      mcpServer: entry.serverName,
+      ...(entry.annotations ? { annotations: { ...entry.annotations } } : {}),
       ...(isDeferred(entry.serverName) ? { deferred: true } : {})
     }
   }));

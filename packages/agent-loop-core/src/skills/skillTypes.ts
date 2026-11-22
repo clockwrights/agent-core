@@ -40,7 +40,8 @@ export interface SkillEntry {
   compatibility?: string;
   /**
    * Optional `allowed-tools` frontmatter field (space-separated tool names),
-   * parsed into a list. Informational for now: nothing pre-approves tools.
+   * parsed into a list. Pass `skillAllowedTools(skills)` as `preApproved` to
+   * `createToolApprovalPolicy` to let these tools run without asking.
    */
   allowedTools?: string[];
 }

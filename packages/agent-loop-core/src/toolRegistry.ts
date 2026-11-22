@@ -4,6 +4,18 @@ import { limitToolResult, type ToolOutputStore } from "./toolResultLimits.js";
 export type ToolSource = "domain" | "mcp" | "memory" | "system";
 export type ToolRisk = "read" | "write" | "external";
 
+/**
+ * Behaviour hints a tool declares about itself (the MCP tool annotations).
+ * Only explicit values are recorded. They are claims, not guarantees: see
+ * `createToolApprovalPolicy` for how they are used.
+ */
+export interface ToolAnnotations {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
 export interface ToolMetadata {
   source: ToolSource;
   risk: ToolRisk;
@@ -18,6 +30,10 @@ export interface ToolMetadata {
    * `tool_search` (see `createToolSearch`). Ignored unless tool search is used.
    */
   deferred?: boolean;
+  /** MCP server the tool comes from (set by `createMcpToolDefinitions`). */
+  mcpServer?: string;
+  /** Hints the tool declares about itself (MCP annotations). They do not change `risk`. */
+  annotations?: ToolAnnotations;
 }
 
 export interface ResolveToolsOptions {
