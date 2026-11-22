@@ -8,6 +8,7 @@
  * it back as `resumeFrom` to continue.
  */
 
+import { createHash } from "node:crypto";
 import type { AgentEndReason, AgentMessage, AgentUsage } from "./types.js";
 
 /** Current `RunState.version`. */
@@ -29,6 +30,41 @@ export interface RunState {
   errorMessage?: string;
   /** Free caller data (JSON). The runtime copies it through untouched. */
   metadata?: Record<string, unknown>;
+  /**
+   * Tool calls waiting for a human decision (set when `endReason` is
+   * "interrupted"). Resume with `approvals` keyed by `toolCallId`.
+   */
+  interruptions?: ToolInterruption[];
+}
+
+export interface ToolInterruption {
+  toolCallId: string;
+  toolName: string;
+  /** Validated arguments, as the approver should see them. */
+  arguments: Record<string, unknown>;
+  /**
+   * sha256 of the canonical JSON of `arguments`. An approval only applies
+   * while the call's arguments still hash to this value.
+   */
+  argumentsHash: string;
+  reason?: string;
+  data?: Record<string, unknown>;
+}
+
+/** sha256 hex of the canonical JSON (object keys sorted) of a value. */
+export function hashArguments(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 /** Thrown by `serializeRunState` / `parseRunState` and for an invalid `resumeFrom`. */
@@ -134,6 +170,20 @@ export function parseRunState(input: string | unknown): RunState {
   if (s.endReason !== undefined && typeof s.endReason !== "string") bad("endReason must be a string");
   if (s.errorMessage !== undefined && typeof s.errorMessage !== "string") bad("errorMessage must be a string");
   if (s.metadata !== undefined && !isPlainObject(s.metadata)) bad("metadata must be an object");
+  if (s.interruptions !== undefined) {
+    if (!Array.isArray(s.interruptions)) bad("interruptions must be an array");
+    (s.interruptions as unknown[]).forEach((entry, i) => {
+      const ok =
+        isPlainObject(entry) &&
+        typeof entry.toolCallId === "string" &&
+        typeof entry.toolName === "string" &&
+        isPlainObject(entry.arguments) &&
+        typeof entry.argumentsHash === "string" &&
+        (entry.reason === undefined || typeof entry.reason === "string") &&
+        (entry.data === undefined || isPlainObject(entry.data));
+      if (!ok) bad(`interruptions[${i}] must have toolCallId, toolName, arguments and argumentsHash`);
+    });
+  }
 
   const state: RunState = {
     version: RUN_STATE_VERSION,
@@ -145,6 +195,9 @@ export function parseRunState(input: string | unknown): RunState {
   if (s.endReason !== undefined) state.endReason = s.endReason as AgentEndReason;
   if (s.errorMessage !== undefined) state.errorMessage = s.errorMessage as string;
   if (s.metadata !== undefined) state.metadata = s.metadata as Record<string, unknown>;
+  if (s.interruptions !== undefined) {
+    state.interruptions = (s.interruptions as ToolInterruption[]).map((entry) => ({ ...entry }));
+  }
   return state;
 }
 

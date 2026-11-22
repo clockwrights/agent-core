@@ -43,7 +43,9 @@ export type AgentUsage = Usage;
  * - `stop_condition`: a `stopWhen` condition returned true.
  * - `aborted`: the signal was aborted (the model call ended with stopReason "aborted").
  * - `error`: the model call ended with stopReason "error", or a `prepareStep` /
- *   `stopWhen` hook threw.
+ *   `stopWhen` / `beforeToolCall` / `afterToolCall` / `onCheckpoint` hook threw.
+ * - `interrupted`: `beforeToolCall` asked for approval; the state lists the
+ *   calls in `interruptions`; resume with `approvals`.
  *
  * New reasons may be added in later versions; treat unknown values as "ended".
  */
@@ -55,7 +57,53 @@ export type AgentEndReason =
   | "budget"
   | "stop_condition"
   | "aborted"
-  | "error";
+  | "error"
+  | "interrupted";
+
+/** A tool call as the approval hooks see it: arguments are validated (after `prepareArguments` and coercion). */
+export interface ToolCallInfo {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface BeforeToolCallContext {
+  toolCall: ToolCallInfo;
+  /** The tool that would run. */
+  tool: AgentTool<any>;
+  /** 1-based turn number of the model call that requested the tool. */
+  turn: number;
+  /** Transcript so far (a copy). */
+  messages: readonly AgentMessage[];
+  signal?: AbortSignal;
+}
+
+/**
+ * Decision returned by `beforeToolCall`; `undefined` means allow.
+ * - `deny`: the model gets an error result (`message`, default "Tool call denied"); the run continues.
+ * - `ask`: nothing in the batch runs; the run ends with reason "interrupted". `data` must be JSON.
+ */
+export type ToolCallDecision =
+  | { action: "allow" }
+  | { action: "deny"; message?: string }
+  | { action: "ask"; reason?: string; data?: Record<string, unknown> };
+
+export interface AfterToolCallContext {
+  toolCall: ToolCallInfo;
+  tool: AgentTool<any>;
+  /** The result as the tool produced it (thrown errors and timeouts arrive as error results). */
+  result: AgentToolResult<any>;
+  isError: boolean;
+  turn: number;
+}
+
+/** Fields of a tool result to replace; omitted fields stay as they are. */
+export type ToolResultOverride = Partial<Pick<AgentToolResult<any>, "content" | "details" | "terminate">> & {
+  isError?: boolean;
+};
+
+/** A human decision for an interrupted tool call, passed on resume in `approvals`. */
+export type ToolApproval = { approve: true } | { approve: false; message?: string };
 
 /** One completed turn: the model call and the tool batch it triggered. */
 export interface AgentStep {
@@ -156,4 +204,13 @@ export type AgentEvent =
   | { type: "message_end"; message: AgentMessage }
   | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any }
   | { type: "tool_execution_update"; toolCallId: string; toolName: string; args: any; partialResult: any }
-  | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean };
+  | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean }
+  | {
+      type: "tool_approval_requested";
+      toolCallId: string;
+      toolName: string;
+      /** Validated arguments of the call. */
+      args: Record<string, unknown>;
+      reason?: string;
+      data?: Record<string, unknown>;
+    };

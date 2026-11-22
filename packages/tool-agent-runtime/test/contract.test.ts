@@ -22,7 +22,11 @@ const EXPECTED_KEYS: Record<AgentEvent["type"], string[]> = {
   tool_execution_start: ["args", "toolCallId", "toolName", "type"],
   tool_execution_update: ["args", "partialResult", "toolCallId", "toolName", "type"],
   tool_execution_end: ["isError", "result", "toolCallId", "toolName", "type"],
+  tool_approval_requested: ["args", "data", "reason", "toolCallId", "toolName", "type"],
 };
+
+/** Event types the main scenario does not produce (each has its own test). */
+const SEPARATE_SCENARIO = new Set(["tool_approval_requested"]);
 
 test("contract version is 1", () => {
   assert.equal(AGENT_EVENT_VERSION, 1);
@@ -49,7 +53,11 @@ test("every emitted event has exactly the documented fields", async () => {
   replay.dispose();
 
   const seenTypes = new Set(events.types());
-  assert.deepEqual([...seenTypes].sort(), Object.keys(EXPECTED_KEYS).sort(), "scenario covers every event type");
+  assert.deepEqual(
+    [...seenTypes].sort(),
+    Object.keys(EXPECTED_KEYS).filter((k) => !SEPARATE_SCENARIO.has(k)).sort(),
+    "scenario covers every event type",
+  );
 
   for (const event of events.events) {
     assert.deepEqual(Object.keys(event).sort(), EXPECTED_KEYS[event.type], `fields of ${event.type}`);
@@ -65,4 +73,33 @@ test("agent_end carries errorMessage only for error/aborted runs", async () => {
 
   const end = events.ofType("agent_end")[0]!;
   assert.deepEqual(Object.keys(end).sort(), ["errorMessage", "messages", "reason", "state", "type", "usage"]);
+});
+
+test("tool_approval_requested has exactly the documented fields", async () => {
+  const params = Type.Object({ to: Type.String() });
+  const send: AgentTool<typeof params> = {
+    name: "send",
+    label: "Send",
+    description: "Send.",
+    parameters: params,
+    execute: async () => ({ content: [{ type: "text", text: "sent" }], details: {} }),
+  };
+  const replay = createReplayModel([replyToolCalls([{ name: "send", arguments: { to: "a" } }])]);
+  const events = collectEvents();
+  await runToolAgent(
+    {
+      systemPrompt: "s",
+      model: replay.model,
+      tools: [send],
+      prompt: "go",
+      beforeToolCall: () => ({ action: "ask", reason: "external", data: { risk: "external" } }),
+    },
+    events.emit,
+  );
+  replay.dispose();
+  const [event] = events.ofType("tool_approval_requested");
+  assert.deepEqual(Object.keys(event!).sort(), EXPECTED_KEYS.tool_approval_requested);
+  const end = events.ofType("agent_end")[0]!;
+  assert.equal(end.reason, "interrupted");
+  assert.deepEqual(Object.keys(end).sort(), ["messages", "reason", "state", "type", "usage"]);
 });

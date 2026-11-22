@@ -37,13 +37,18 @@ import {
   type Transport,
 } from "@earendil-works/pi-ai";
 import { ToolTimeoutError } from "./errors.js";
-import { parseRunState, RUN_STATE_VERSION, type RunState } from "./runState.js";
+import { hashArguments, parseRunState, RUN_STATE_VERSION, type RunState, type ToolInterruption } from "./runState.js";
 import { selectActiveTools, type PrepareStep, type StopCondition } from "./steps.js";
 import {
   AGENT_EVENT_VERSION,
+  type AfterToolCallContext,
   type AgentEndReason,
   type AgentEvent,
   type AgentMessage,
+  type BeforeToolCallContext,
+  type ToolApproval,
+  type ToolCallDecision,
+  type ToolResultOverride,
   type AgentStep,
   type AgentTool,
   type AgentToolResult,
@@ -91,6 +96,29 @@ export interface ToolAgentRunInput {
    * the run with reason "error".
    */
   onCheckpoint?: (state: RunState) => void | Promise<void>;
+  /**
+   * Decides each tool call before it runs: allow (also `undefined`), deny
+   * (error result to the model) or ask (the run ends "interrupted" and the
+   * batch waits for `approvals`). Runs only for calls with valid arguments
+   * within `maxToolCalls`. A throw ends the run with reason "error" before
+   * any tool of the batch runs.
+   */
+  beforeToolCall?: (context: BeforeToolCallContext) => ToolCallDecision | undefined | Promise<ToolCallDecision | undefined>;
+  /**
+   * Sees every executed call's result (including thrown errors and
+   * timeouts) and may replace content, details, isError or terminate. A
+   * throw replaces that result with an error and ends the run with reason
+   * "error" after the batch.
+   */
+  afterToolCall?: (context: AfterToolCallContext) => ToolResultOverride | undefined | Promise<ToolResultOverride | undefined>;
+  /**
+   * Human decisions for the calls in `resumeFrom.interruptions`, keyed by
+   * tool-call id. An approved call runs without `beforeToolCall`; a rejected
+   * one gets an error result. An approval only applies while the call's
+   * arguments still match the recorded hash. Ids not in
+   * `resumeFrom.interruptions` are a RangeError.
+   */
+  approvals?: Record<string, ToolApproval>;
   signal?: AbortSignal;
   apiKey?: string;
   sessionId?: string;
@@ -181,6 +209,7 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
   validateLimits(input);
   validateStart(input);
   const resumeFrom = input.resumeFrom === undefined ? undefined : parseRunState(input.resumeFrom);
+  validateApprovals(input.approvals, resumeFrom);
 
   // Starting transcript. A trailing failed/aborted model reply is dropped so
   // the model retries that turn (providers also reject such messages).
@@ -229,6 +258,7 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
     if (end !== undefined) state.endReason = end;
     if (end !== undefined && errorMessage !== undefined) state.errorMessage = errorMessage;
     if (resumeFrom?.metadata !== undefined) state.metadata = resumeFrom.metadata;
+    if (end === "interrupted" && interruptions) state.interruptions = interruptions.map((i) => ({ ...i }));
     return state;
   };
 
@@ -264,17 +294,116 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
         : undefined;
 
     const turnTools = currentTools ?? input.tools;
-    const batch = await executeToolCalls(toolCalls, allowed, blockedMessage, { ...execution, tools: turnTools });
-    toolCallsExecuted += allowed;
 
-    for (const r of batch.messages) {
-      messages.push(r);
-      emit({ type: "message_start", message: r });
-      emit({ type: "message_end", message: r });
+    // Decide every call before any tool runs (approval hooks see the whole
+    // batch; a single "ask" holds the batch).
+    const plans: CallPlan[] = [];
+    const asks: ToolInterruption[] = [];
+    for (let i = 0; i < toolCalls.length; i++) {
+      const tc = toolCalls[i]!;
+      if (i >= allowed) {
+        plans.push({ tc, kind: "error", result: errorResult(blockedMessage!), counts: false });
+        continue;
+      }
+      const prep = prepareTool(tc, turnTools);
+      if (prep.kind === "error") {
+        // Unknown tools and invalid arguments count as executions (unchanged).
+        plans.push({ tc, kind: "error", result: prep.result, counts: true });
+        continue;
+      }
+      const args = prep.args as Record<string, unknown>;
+      let decision: ToolCallDecision | undefined;
+      const approval = approvalFor(tc.id, args);
+      if (approval) {
+        decision = approval.approve
+          ? { action: "allow" }
+          : { action: "deny", message: approval.message ? `Denied by the approver: ${approval.message}` : "Denied by the approver." };
+      } else if (input.beforeToolCall) {
+        try {
+          decision =
+            (await input.beforeToolCall({
+              toolCall: { id: tc.id, name: tc.name, arguments: args },
+              tool: prep.tool,
+              turn: turns,
+              messages: messages.slice(),
+              signal: input.signal,
+            })) ?? undefined;
+        } catch (err) {
+          // Fail closed: nothing in the batch runs; the calls stay pending.
+          errorMessage = `beforeToolCall failed: ${err instanceof Error ? err.message : String(err)}`;
+          emit({ type: "turn_end", message: assistantMessage, toolResults: existingResults, usage: turnUsage });
+          return "error";
+        }
+      }
+      if (decision?.action === "deny") {
+        plans.push({ tc, kind: "error", result: errorResult(decision.message ?? "Tool call denied"), counts: false });
+      } else if (decision?.action === "ask") {
+        const interruption: ToolInterruption = {
+          toolCallId: tc.id,
+          toolName: tc.name,
+          arguments: args,
+          argumentsHash: hashArguments(args),
+        };
+        if (decision.reason !== undefined) interruption.reason = decision.reason;
+        if (decision.data !== undefined) interruption.data = decision.data;
+        asks.push(interruption);
+        plans.push({ tc, kind: "held" });
+      } else {
+        plans.push({ tc, kind: "run", tool: prep.tool, args, counts: true });
+      }
     }
+
+    const record = (results: ToolResultMessage[]) => {
+      for (const r of results) {
+        messages.push(r);
+        emit({ type: "message_start", message: r });
+        emit({ type: "message_end", message: r });
+      }
+    };
+
+    if (asks.length > 0) {
+      // Nothing runs while a call waits for a human. Final error results
+      // (denied, blocked, invalid) are recorded now; allowed calls stay
+      // pending and are decided again on resume.
+      const finalPlans = plans.filter((p): p is ErrorPlan => p.kind === "error");
+      const early = await executeToolCalls(finalPlans, { ...execution, tools: turnTools, turn: turns, failures: [] });
+      toolCallsExecuted += finalPlans.filter((p) => p.counts).length;
+      record(early.messages);
+      for (const ask of asks) {
+        emit({
+          type: "tool_approval_requested",
+          toolCallId: ask.toolCallId,
+          toolName: ask.toolName,
+          args: ask.arguments,
+          ...(ask.reason !== undefined ? { reason: ask.reason } : {}),
+          ...(ask.data !== undefined ? { data: ask.data } : {}),
+        });
+      }
+      interruptions = asks;
+      emit({ type: "turn_end", message: assistantMessage, toolResults: [...existingResults, ...early.messages], usage: turnUsage });
+      return "interrupted";
+    }
+
+    const failures: string[] = [];
+    const runnable = plans as Array<ErrorPlan | RunPlan>;
+    const batch = await executeToolCalls(runnable, {
+      ...execution,
+      tools: turnTools,
+      turn: turns,
+      afterToolCall: input.afterToolCall,
+      failures,
+    });
+    toolCallsExecuted += runnable.filter((p) => p.counts).length;
+
+    record(batch.messages);
     const toolResults = [...existingResults, ...batch.messages];
     emit({ type: "turn_end", message: assistantMessage, toolResults, usage: turnUsage });
     steps.push({ turn: turns, message: assistantMessage, toolResults, usage: turnUsage });
+
+    if (failures.length > 0) {
+      errorMessage = failures[0];
+      return "error";
+    }
 
     let stop: AgentEndReason | undefined = batch.terminate
       ? "terminated"
@@ -311,6 +440,18 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
   // Tools offered on the latest model call (prepareStep may narrow them);
   // pending calls from a saved state run against the full tool list.
   let currentTools: AgentTool<any>[] | undefined;
+  // Calls waiting for a human decision when the run ends "interrupted".
+  let interruptions: ToolInterruption[] | undefined;
+
+  /** The caller's decision for an interrupted call, if it still applies. */
+  const approvalFor = (toolCallId: string, args: Record<string, unknown>): ToolApproval | undefined => {
+    const approval = input.approvals?.[toolCallId];
+    if (!approval) return undefined;
+    const recorded = resumeFrom?.interruptions?.find((i) => i.toolCallId === toolCallId);
+    // Arguments changed since the approver saw them: the approval does not apply.
+    if (!recorded || recorded.argumentsHash !== hashArguments(args)) return undefined;
+    return approval;
+  };
 
   // 1. Pending tool calls from a saved conversation (pause or crash in the
   //    middle of a batch): run only the calls that have no result yet.
@@ -429,6 +570,18 @@ function validateStart(input: ToolAgentRunInput): void {
   }
   if (input.images?.length && input.prompt === undefined) {
     throw new RangeError("images require a prompt to attach them to");
+  }
+}
+
+function validateApprovals(approvals: ToolAgentRunInput["approvals"], resumeFrom: RunState | undefined): void {
+  if (approvals === undefined) return;
+  for (const [toolCallId, approval] of Object.entries(approvals)) {
+    if (!resumeFrom?.interruptions?.some((i) => i.toolCallId === toolCallId)) {
+      throw new RangeError(`approvals: "${toolCallId}" is not an interrupted tool call of resumeFrom`);
+    }
+    if (!approval || typeof approval.approve !== "boolean") {
+      throw new RangeError(`approvals: "${toolCallId}" needs { approve: true } or { approve: false, message? }`);
+    }
   }
 }
 
@@ -603,6 +756,20 @@ interface ToolExecutionOptions {
   batchStrategy: "serialize-batch" | "sequential-barriers";
 }
 
+interface BatchOptions extends ToolExecutionOptions {
+  /** Turn number reported to `afterToolCall`. */
+  turn: number;
+  afterToolCall?: ToolAgentRunInput["afterToolCall"];
+  /** Collects `afterToolCall` failure messages. */
+  failures: string[];
+}
+
+/** What to do with one tool call of a batch. */
+type ErrorPlan = { tc: ToolCall; kind: "error"; result: AgentToolResult<any>; counts: boolean };
+type RunPlan = { tc: ToolCall; kind: "run"; tool: AgentTool<any>; args: Record<string, unknown>; counts: true };
+type HeldPlan = { tc: ToolCall; kind: "held" };
+type CallPlan = ErrorPlan | RunPlan | HeldPlan;
+
 interface ToolBatch {
   messages: ToolResultMessage[];
   terminate: boolean;
@@ -611,20 +778,13 @@ interface ToolBatch {
 type ToolOutcome = { tc: ToolCall; result: AgentToolResult<any>; isError: boolean };
 
 /**
- * Execute a batch. The first `allowed` calls run normally; the rest get an
- * error result carrying `blockedMessage` without being executed.
+ * Execute a batch of planned calls: run plans execute the tool, error plans
+ * (blocked, denied, invalid) produce their error result without running.
  */
-async function executeToolCalls(
-  toolCalls: ToolCall[],
-  allowed: number,
-  blockedMessage: string | undefined,
-  options: ToolExecutionOptions,
-): Promise<ToolBatch> {
-  const tasks = toolCalls.map((tc, index) => () =>
-    executeOne(tc, index < allowed ? undefined : blockedMessage, options),
-  );
-  const isSequential = toolCalls.map(
-    (tc) => options.tools.find((t) => t.name === tc.name)?.executionMode === "sequential",
+async function executeToolCalls(plans: Array<ErrorPlan | RunPlan>, options: BatchOptions): Promise<ToolBatch> {
+  const tasks = plans.map((plan) => () => executeOne(plan, options));
+  const isSequential = plans.map(
+    (plan) => options.tools.find((t) => t.name === plan.tc.name)?.executionMode === "sequential",
   );
   const parallelLimit = options.maxParallel ?? tasks.length;
 
@@ -678,22 +838,47 @@ async function runWithConcurrency<T>(tasks: Array<() => Promise<T>>, limit: numb
   return results;
 }
 
-async function executeOne(
-  tc: ToolCall,
-  blockedMessage: string | undefined,
-  options: ToolExecutionOptions,
-): Promise<ToolOutcome> {
+async function executeOne(plan: ErrorPlan | RunPlan, options: BatchOptions): Promise<ToolOutcome> {
   const { emit } = options;
+  const { tc } = plan;
   emit({ type: "tool_execution_start", toolCallId: tc.id, toolName: tc.name, args: tc.arguments });
 
-  const prep: PrepResult = blockedMessage
-    ? { kind: "error", result: errorResult(blockedMessage) }
-    : prepareTool(tc, options.tools);
-  const { result, isError } =
-    prep.kind === "error" ? { result: prep.result, isError: true } : await runTool(prep.tool, tc, prep.args, options);
+  let { result, isError } =
+    plan.kind === "error" ? { result: plan.result, isError: true } : await runTool(plan.tool, tc, plan.args, options);
+
+  if (plan.kind === "run" && options.afterToolCall) {
+    try {
+      const override = await options.afterToolCall({
+        toolCall: { id: tc.id, name: tc.name, arguments: plan.args },
+        tool: plan.tool,
+        result,
+        isError,
+        turn: options.turn,
+      });
+      if (override) ({ result, isError } = applyOverride(result, isError, override));
+    } catch (err) {
+      // Fail closed: the unfiltered result never reaches the transcript.
+      const message = `afterToolCall failed: ${err instanceof Error ? err.message : String(err)}`;
+      options.failures.push(message);
+      result = errorResult(message);
+      isError = true;
+    }
+  }
 
   emit({ type: "tool_execution_end", toolCallId: tc.id, toolName: tc.name, result, isError });
   return { tc, result, isError };
+}
+
+function applyOverride(
+  result: AgentToolResult<any>,
+  isError: boolean,
+  override: ToolResultOverride,
+): { result: AgentToolResult<any>; isError: boolean } {
+  const next: AgentToolResult<any> = { ...result };
+  if (override.content !== undefined) next.content = override.content;
+  if (override.details !== undefined) next.details = override.details;
+  if (override.terminate !== undefined) next.terminate = override.terminate;
+  return { result: next, isError: override.isError ?? isError };
 }
 
 type PrepResult =

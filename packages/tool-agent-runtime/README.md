@@ -63,6 +63,7 @@ import {
   runToolAgent,
   runAgent,
   serializeRunState,
+  hashArguments,
   parseRunState,
   RunStateError,
   ToolTimeoutError,
@@ -79,6 +80,11 @@ import {
   type AgentUsage,
   type RunState,
   type RunResult,
+  type ToolCallDecision,
+  type ToolApproval,
+  type ToolInterruption,
+  type BeforeToolCallContext,
+  type AfterToolCallContext,
 } from "@maya-ai/tool-agent-runtime";
 ```
 
@@ -109,6 +115,9 @@ Run a multi-turn tool loop from a prompt, a prior conversation (`messages`) or a
 | `toolBatchStrategy` | `"serialize-batch" \| "sequential-barriers"`? | How a batch with a `sequential` tool runs. `serialize-batch` (default): the whole batch one at a time. `sequential-barriers`: each sequential tool runs alone at its position; the parallel tools between them run concurrently. |
 | `stopWhen` | `StopCondition \| StopCondition[]`? | Custom stop conditions, checked after each turn's tool batch; any `true` ends the run with reason `stop_condition`. Helpers: `stepCountIs(n)`, `hasToolCall(...names)`. |
 | `prepareStep` | `PrepareStep?` | Called before each model call with `{ turn, steps, messages }`; may return per-step overrides `{ model, systemPrompt, reasoning, activeTools, messages }`. |
+| `beforeToolCall` | `(ctx) => ToolCallDecision \| undefined`? | Decides each tool call before it runs: allow, deny or ask. See [Tool approval hooks](#tool-approval-hooks). |
+| `afterToolCall` | `(ctx) => ToolResultOverride \| undefined`? | Sees each executed call's result and may replace it before the model sees it. |
+| `approvals` | `Record<string, ToolApproval>?` | Decisions for the interrupted calls of `resumeFrom`, keyed by tool-call id. |
 
 Limits are validated up front: a non-positive or non-integer value rejects with a `RangeError` before any event is emitted.
 
@@ -163,8 +172,9 @@ Stream of lifecycle, message, and tool events:
 | `turn_start` / `turn_end` | Each assistant turn (model call + any tool batch). `turn_end.usage` is that model call's usage. |
 | `message_start` / `message_update` / `message_end` | Streaming text/thinking/tool-call deltas for each assistant or tool-result message. |
 | `tool_execution_start` / `tool_execution_update` / `tool_execution_end` | Per tool call. `_start` fires when the tool actually starts. `_update` is emitted when a tool calls its `onUpdate` callback. `_end` carries `isError`. |
+| `tool_approval_requested` | `beforeToolCall` asked for approval: `{ toolCallId, toolName, args, reason?, data? }`. One per asked call; the run then ends with reason `interrupted`. |
 
-`AgentEndReason`: `completed` (answered without tools) · `terminated` (every result had `terminate: true`) · `max_turns` · `max_tool_calls` · `budget` · `stop_condition` · `aborted` · `error` (also when a `prepareStep` / `stopWhen` hook throws). New reasons may be added; treat unknown values as "ended".
+`AgentEndReason`: `completed` (answered without tools) · `terminated` (every result had `terminate: true`) · `max_turns` · `max_tool_calls` · `budget` · `stop_condition` · `aborted` · `error` (also when a `prepareStep` / `stopWhen` / `beforeToolCall` / `afterToolCall` / `onCheckpoint` hook throws) · `interrupted` (a tool call waits for approval). New reasons may be added; treat unknown values as "ended".
 
 `AgentUsage` is pi-ai's `Usage`: `input`, `output`, `cacheRead`, `cacheWrite`, `totalTokens` and `cost` (USD, computed by pi-ai from the model's pricing). Providers that report no usage count as zero.
 
@@ -179,6 +189,7 @@ Stream of lifecycle, message, and tool events:
   - the assistant returns no tool calls (`completed`),
   - the assistant's `stopReason` is `"error"` or `"aborted"` (`error` / `aborted`),
   - every tool result in the latest batch has `terminate: true` (`terminated`), or
+  - `beforeToolCall` asked for approval (`interrupted`), or
   - a configured limit is reached (`max_tool_calls`, `max_turns`, `budget`). Limits are checked after a turn's tool batch, so every tool call in the transcript has a result.
 - Within a batch:
   - if any tool has `executionMode: "sequential"`, the whole batch runs sequentially — or, with `toolBatchStrategy: "sequential-barriers"`, each sequential tool runs alone and the parallel tools between them run together;
@@ -204,6 +215,33 @@ await runToolAgent({
 - **`prepareStep`** runs before every model call, including the first. Overrides apply to that step only and are not persisted: `messages` replaces what the model sees (for pruning or clearing old tool results) without changing the run's transcript; `activeTools` narrows both the tools offered and the tools that can execute in that step (a call outside the set gets a "not found" error result; unknown names are ignored). Tool choice is not exposed: pi-ai's generic stream options have no provider-neutral tool-choice field.
 - `composePrepareSteps(a, b, …)` combines hooks: they run in order and each sees the previous hook's `messages`; for `model`, `systemPrompt` and `reasoning` the last hook that sets one wins, and `activeTools` lists are intersected.
 - A hook that throws ends the run with reason `error` and `errorMessage` `"prepareStep failed: …"` / `"stopWhen failed: …"`. When `prepareStep` fails no model call happened, so `agent_end` follows the open `turn_start` directly.
+
+## Tool approval hooks
+
+```ts
+const policy = ({ tool, toolCall }: BeforeToolCallContext): ToolCallDecision | undefined => {
+  if (tool.name === "delete_account") return { action: "deny", message: "Never delete accounts." };
+  if (tool.name.startsWith("send_")) return { action: "ask", reason: "sends a message", data: { to: toolCall.arguments.to } };
+  return undefined; // allow
+};
+
+const first = await runAgent({ systemPrompt, model, tools, prompt, beforeToolCall: policy });
+if (first.reason === "interrupted") {
+  // show first.state.interruptions to a person, save the state, wait…
+  const next = await runAgent({
+    systemPrompt, model, tools, beforeToolCall: policy,
+    resumeFrom: first.state,
+    approvals: { [first.state.interruptions![0]!.toolCallId]: { approve: true } },
+  });
+}
+```
+
+- **`beforeToolCall`** gets `{ toolCall: { id, name, arguments }, tool, turn, messages, signal }` with arguments already validated (after `prepareArguments` and coercion). It runs only for calls that would execute — unknown tools, invalid arguments and calls past `maxToolCalls` keep their error results without it. Return `undefined` or `{ action: "allow" }` to run, `{ action: "deny", message? }` to send the model an error result (default `"Tool call denied"`; the run continues), or `{ action: "ask", reason?, data? }` (`data` must be JSON).
+- **A batch runs only when nothing in it is waiting.** All decisions for a batch are made first. If any call asks, no tool in the batch runs: denied calls get their error results, a `tool_approval_requested` event is emitted per asked call, and the run ends with reason `interrupted`. `state.interruptions` lists `{ toolCallId, toolName, arguments, argumentsHash, reason?, data? }`. Allowed calls of that batch are decided again on resume.
+- **Resume with `approvals`** keyed by tool-call id: `{ approve: true }` runs the call without asking `beforeToolCall` again; `{ approve: false, message? }` sends the model `"Denied by the approver: …"` and the run continues. A call with no decision yet is asked again. An approval only applies while the call's arguments still match the recorded `argumentsHash` (sha256 of canonical JSON, see `hashArguments`), so editing the saved transcript voids it. An id that is not in `resumeFrom.interruptions` is a `RangeError`. Approvals are not signed; treat saved state as trusted input or sign it yourself.
+- **`afterToolCall`** gets `{ toolCall, tool, result, isError, turn }` for every executed call, including thrown errors and timeouts (not for denied, blocked or invalid calls), and may return `{ content?, details?, isError?, terminate? }` to replace those fields — for example to redact secrets or label untrusted content before the model and the saved state see it.
+- **Failing hooks fail closed.** A throwing `beforeToolCall` ends the run with reason `error` before any tool of the batch runs (the calls stay pending, so the state can be resumed). A throwing `afterToolCall` replaces that call's result with an error result, the rest of the batch finishes, then the run ends with reason `error`.
+- Denied and waiting calls do not count toward `maxToolCalls`; an approved call counts when it runs. Hooks are configuration, not state: pass them again on every resume.
 
 ## Conversations, saved state and resume
 
