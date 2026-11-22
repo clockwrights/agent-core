@@ -266,3 +266,9 @@ test("LLM handler: LLM throws → falls back to passthrough result (no re-throw)
   assert.ok(typeof result.results === "object");
   assert.ok(result.unresolvedItems.some((i) => i.reason.includes("error")));
 });
+
+test("buildContinuationPrompt: cites the policy as name@version#hash", () => {
+  const pkg = makePackage({ policyRef: { name: "kyc", version: "2.1.0", contentHash: "abc123" } });
+  const prompt = buildContinuationPrompt(pkg, "check");
+  assert.ok(prompt.includes("Policy: kyc@2.1.0#abc123"), prompt);
+});

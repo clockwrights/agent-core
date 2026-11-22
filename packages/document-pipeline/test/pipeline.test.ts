@@ -235,3 +235,27 @@ test("pipeline: single text unit is extracted into unitExtractions", async () =>
     assert.equal(pkg.units.length, 1);
   }
 });
+
+test("pipeline: ingest failure keeps the requested policy's reference", async () => {
+  const registry = new DocumentPolicyRegistry();
+  registry.register("identity-documents", "Policy text for ID documents.");
+  const expected = registry.get("identity-documents")!;
+
+  const result = await runDocumentPipeline(
+    { buffer: Buffer.alloc(0), fileName: "empty.pdf", policyName: "identity-documents" },
+    { policyRegistry: registry },
+  );
+
+  const pkg = result.analysisPackage;
+  assert.equal(pkg.processingLog.find((e) => e.stage === "ingest")?.status, "failed");
+  assert.deepEqual(pkg.policyRef, {
+    name: "identity-documents",
+    version: expected.version,
+    contentHash: expected.contentHash,
+  });
+});
+
+test("pipeline: ingest failure without a policy → policyRef is null", async () => {
+  const result = await runDocumentPipeline({ buffer: Buffer.alloc(0), fileName: "empty.pdf" });
+  assert.equal(result.analysisPackage.policyRef, null);
+});

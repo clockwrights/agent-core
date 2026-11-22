@@ -695,3 +695,49 @@ test("classify: when tierCAdapter is omitted, Tier C falls back to llmProvider",
   assert.ok(!calls[0]!.images || calls[0]!.images.length === 0);
   assert.ok(calls[1]!.images && calls[1]!.images.length === 1);
 });
+
+// ---------------------------------------------------------------------------
+// MRZ date century inference (birth vs expiry)
+// ---------------------------------------------------------------------------
+
+function td3Fields(dobYYMMDD: string, expiryYYMMDD: string) {
+  const line1 = "P<UTOSAMPLE<<TEST<<<<<<<<<<<<<<<<<<<<<<<<<<<";
+  const line2 = `X000000010UTO${dobYYMMDD}1F${expiryYYMMDD}4${"<".repeat(14)}02`;
+  assert.equal(line1.length, 44);
+  assert.equal(line2.length, 44);
+  return classifyGroups({
+    groups: [SINGLE_GROUP],
+    units: [SINGLE_UNIT],
+    extractions: [
+      { unitIndex: 1, text: `${line1}\n${line2}`, blocks: [], images: [], extractorId: "plain-text", ocrUsed: false },
+    ],
+    llmProvider: makeDisabledLlm(),
+  }).then((r) => Object.fromEntries(r[0]!.fields.map((f) => [f.name, f.value])));
+}
+
+const yy = (year: number) => String(((year % 100) + 100) % 100).padStart(2, "0");
+
+test("classify MRZ dates: expiry years in the 2030s+ stay in the 2000s", async () => {
+  const now = new Date().getUTCFullYear();
+  const soon = now + 5;
+  const fields = await td3Fields("700101", `${yy(soon)}0615`);
+  assert.equal(fields.expiry_date, `${soon}-06-15`);
+  assert.equal((await td3Fields("700101", "310101")).expiry_date, "2031-01-01");
+});
+
+test("classify MRZ dates: a long-expired document from the 1990s stays in the 1900s", async () => {
+  assert.equal((await td3Fields("700101", "990101")).expiry_date, "1999-01-01");
+});
+
+test("classify MRZ dates: birth dates are never in the future", async () => {
+  const now = new Date().getUTCFullYear();
+  const adult = now - 30;
+  assert.equal((await td3Fields(`${yy(adult)}0101`, "310101")).date_of_birth, `${adult}-01-01`);
+  const nextYear = now + 1;
+  assert.equal(
+    (await td3Fields(`${yy(nextYear)}0101`, "310101")).date_of_birth,
+    `${nextYear - 100}-01-01`,
+    "a two-digit year after the current year is a 1900s birth date",
+  );
+  assert.equal((await td3Fields("000229", "310101")).date_of_birth, "2000-02-29");
+});

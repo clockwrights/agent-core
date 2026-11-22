@@ -77,6 +77,18 @@ The pipeline never sends tool definitions through this adapter — tool use belo
 | 6 | Assemble | `assembleAnalysisPackage` | Always succeeds; warns about inconsistencies in log |
 | 7 | Continue | `continuationHandler` | Skipped unless deps + `request.taskIntent` are both present |
 
+### Segmentation result
+
+Each `DocumentGroup` carries `segmentationMethod` and a `confidence` in [0, 1]:
+
+| `segmentationMethod` | Meaning | `confidence` |
+|---|---|---|
+| `structural` | Deterministic boundary signals (MRZ lines, form feeds, separator lines, blank units) | `0.8` |
+| `llm-assisted` | The LLM decided the boundaries | `0.65`; units the LLM left out are collected into a trailing group with `0.4` |
+| `single-group` | The whole submission is one group | `1.0` for a single-unit submission; `UNSEGMENTED_FALLBACK_CONFIDENCE` (`0.5`) when a multi-unit submission could not be split (no structural signal and the LLM fallback disabled, unavailable or failed) |
+
+Route low-confidence groups — in particular the `0.5` fallback — to review rather than treating them as one confirmed document.
+
 ---
 
 ## Three-Tier Classification Cascade
@@ -180,6 +192,8 @@ Policies are natural-language rule sets injected into Tier-B and Tier-C prompts:
 - `buildFieldExtractionPrompt(fieldName, documentLabel, policy?)` — focused single-field prompt for Tier-C refinement.
 
 When no policy is provided, the prompts run in **open-vocabulary mode** — the model classifies freely, marking everything as `unsupported: false`.
+
+Audit trail: every `AnalysisPackage` records the governing policy as `policyRef: { name, version, contentHash }` (also when the pipeline aborts at ingest, so the log shows which policy was requested), and the continuation prompt cites it as `name@version#contentHash`. `policyRef` is `null` in open-vocabulary mode or when the named policy is not registered.
 
 For loading policy bodies from external files (manifest + Markdown bodies), see the sibling package [`@maya-ai/document-policies`](https://www.npmjs.com/package/@maya-ai/document-policies). It emits a plain `LoadedPolicy[]`; the consumer app glues those into a `DocumentPolicyRegistry`.
 

@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { segmentDocuments } from "../src/segment.js";
+import { UNSEGMENTED_FALLBACK_CONFIDENCE, segmentDocuments } from "../src/segment.js";
 import type { DocumentUnit, UnitExtractionResult } from "../src/types.js";
 import type {
   PipelineLlmAdapter,
@@ -46,6 +46,7 @@ test("segment: single unit → one group, method 'single-group'", async () => {
   assert.equal(result.groups.length, 1);
   assert.deepEqual(result.groups[0]!.unitIndices, [1]);
   assert.equal(result.groups[0]!.segmentationMethod, "single-group");
+  assert.equal(result.groups[0]!.confidence, 1, "a single unit is certain");
 });
 
 test("segment: empty units array → one group", async () => {
@@ -217,6 +218,25 @@ test("segment: disabled LLM → falls back to single-group (no errors)", async (
   });
 
   assert.equal(result.groups.length, 1);
+  assert.equal(result.groups[0]!.segmentationMethod, "single-group");
+  assert.equal(
+    result.groups[0]!.confidence,
+    UNSEGMENTED_FALLBACK_CONFIDENCE,
+    "an unconfirmed single group must not report certainty",
+  );
+});
+
+test("segment: deterministic-first with no boundaries → undecided single group", async () => {
+  const result = await segmentDocuments({
+    units: [makeUnit(1), makeUnit(2), makeUnit(3)],
+    extractions: [makeExtraction(1, "a"), makeExtraction(2, "b"), makeExtraction(3, "c")],
+    executionMode: "deterministic-first",
+  });
+
+  assert.equal(result.groups.length, 1);
+  assert.deepEqual(result.groups[0]!.unitIndices, [1, 2, 3]);
+  assert.equal(result.groups[0]!.confidence, UNSEGMENTED_FALLBACK_CONFIDENCE);
+  assert.ok(UNSEGMENTED_FALLBACK_CONFIDENCE < 1);
 });
 
 // ---------------------------------------------------------------------------

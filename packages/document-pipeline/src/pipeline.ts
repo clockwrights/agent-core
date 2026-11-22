@@ -43,6 +43,7 @@ import type {
   DocumentPipelineLimits,
   DocumentPipelineRequest,
   DocumentPipelineResult,
+  DocumentPolicy,
   DocumentUnit,
   FileRecord,
   OCRPlugin,
@@ -141,8 +142,9 @@ export async function runDocumentPipeline(
     } catch (err) {
       const detail = formatIngestError(err);
       logStage(log, "ingest", "failed", detail, t);
-      // Ingest failure is unrecoverable — return minimal package.
-      return { analysisPackage: failedPackage(request, log, "ingest") };
+      // Ingest failure is unrecoverable — return minimal package. The policy
+      // reference is kept so the audit trail shows which policy was requested.
+      return { analysisPackage: failedPackage(request, log, "ingest", lookupPolicy(request, deps)) };
     }
   }
 
@@ -334,9 +336,7 @@ export async function runDocumentPipeline(
   // Stage 6 — Assemble
   // -------------------------------------------------------------------------
 
-  const policy = request.policyName
-    ? (deps.policyRegistry?.get(request.policyName) ?? null)
-    : null;
+  const policy = lookupPolicy(request, deps);
 
   const analysisPackage: AnalysisPackage = assembleAnalysisPackage({
     fileRecords,
@@ -407,10 +407,15 @@ function errorDetail(err: unknown): string {
  * proceed past the given stage. Gives callers a well-typed object with an
  * informative processing log rather than a thrown error.
  */
+function lookupPolicy(request: DocumentPipelineRequest, deps: DocumentPipelineDeps): DocumentPolicy | null {
+  return request.policyName ? (deps.policyRegistry?.get(request.policyName) ?? null) : null;
+}
+
 function failedPackage(
   request: DocumentPipelineRequest,
   log: ProcessingLogEntry[],
   failedStage: string,
+  policy: DocumentPolicy | null,
 ): AnalysisPackage {
   return {
     fileRecords: [
@@ -426,7 +431,9 @@ function failedPackage(
     unitExtractions: [],
     segmentationMap: { groups: [] },
     classifiedGroups: [],
-    policyRef: null,
+    policyRef: policy
+      ? { name: policy.name, version: policy.version, contentHash: policy.contentHash }
+      : null,
     processingLog: [
       ...log,
       {

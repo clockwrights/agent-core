@@ -1,0 +1,51 @@
+{
+  "description": "ZIP: cover letter, then a passport page. The MRZ after non-MRZ text starts a new document.",
+  "input": {
+    "type": "zip",
+    "fileName": "bundle.zip",
+    "files": [
+      {
+        "name": "1-cover-letter.txt",
+        "text": "Cover letter\n\nParagraph 1 of synthetic sample text used only for tests.\nParagraph 2 of synthetic sample text used only for tests.\nParagraph 3 of synthetic sample text used only for tests."
+      },
+      {
+        "name": "2-passport.txt",
+        "text": "PASSPORT\nSPECIMEN - NOT A REAL DOCUMENT\n\nP<UTOSAMPLE<<TEST<PERSON<<<<<<<<<<<<<<<<<<<<\nX000000010UTO7001011F2912314<<<<<<<<<<<<<<02\n"
+      }
+    ]
+  },
+  "expected": {
+    "groups": [
+      {
+        "units": [
+          1
+        ],
+        "method": "structural",
+        "confidence": 0.8,
+        "label": "unknown",
+        "tier": "tier-a",
+        "fields": {},
+        "flags": [
+          "no-classifier-result"
+        ]
+      },
+      {
+        "units": [
+          2
+        ],
+        "method": "structural",
+        "confidence": 0.8,
+        "label": "passport",
+        "tier": "tier-a",
+        "fields": {
+          "surname": "SAMPLE",
+          "given_names": "TEST PERSON",
+          "document_number": "X00000001",
+          "nationality": "UTO",
+          "date_of_birth": "1970-01-01",
+          "expiry_date": "2029-12-31"
+        }
+      }
+    ]
+  }
+}

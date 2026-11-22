@@ -275,12 +275,12 @@ function detectMrz(
       // Date of birth: positions 13–18 (YYMMDD)
       const dob = trimmed.slice(13, 19);
       if (/^\d{6}$/.test(dob)) {
-        fields.push(mrzField("date_of_birth", formatMrzDate(dob), group.unitIndices[0]));
+        fields.push(mrzField("date_of_birth", formatMrzDate(dob, "birth"), group.unitIndices[0]));
       }
       // Expiry: positions 21–26
       const expiry = trimmed.slice(21, 27);
       if (/^\d{6}$/.test(expiry)) {
-        fields.push(mrzField("expiry_date", formatMrzDate(expiry), group.unitIndices[0]));
+        fields.push(mrzField("expiry_date", formatMrzDate(expiry, "expiry"), group.unitIndices[0]));
       }
       break;
     }
@@ -307,11 +307,27 @@ function mrzField(name: string, value: string, sourceUnitIndex: number): Extract
   return { name, value, confidence: 0.88, sourceUnitIndex, method: "deterministic" };
 }
 
-function formatMrzDate(yymmdd: string): string {
-  // Heuristic: years 00-29 → 2000s, 30-99 → 1900s
+/**
+ * Expand an MRZ YYMMDD date to YYYY-MM-DD. MRZ dates carry no century, so
+ * it is inferred from the field and the current year:
+ * - birth date: 20YY unless that is in the future, else 19YY;
+ * - expiry date: 20YY unless that is more than 50 years ahead, else 19YY
+ *   (documents expiring from 2030 on stay in the 2000s; long-expired ones
+ *   from the 1990s stay in the 1900s).
+ */
+function formatMrzDate(yymmdd: string, kind: "birth" | "expiry", now: Date = new Date()): string {
   const yy = parseInt(yymmdd.slice(0, 2), 10);
-  const century = yy <= 29 ? "20" : "19";
-  return `${century}${yymmdd.slice(0, 2)}-${yymmdd.slice(2, 4)}-${yymmdd.slice(4, 6)}`;
+  const currentYear = now.getUTCFullYear();
+  const in2000s = 2000 + yy;
+  const year =
+    kind === "birth"
+      ? in2000s > currentYear
+        ? 1900 + yy
+        : in2000s
+      : in2000s > currentYear + 50
+        ? 1900 + yy
+        : in2000s;
+  return `${year}-${yymmdd.slice(2, 4)}-${yymmdd.slice(4, 6)}`;
 }
 
 // ---------------------------------------------------------------------------

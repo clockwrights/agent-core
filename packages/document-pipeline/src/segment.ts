@@ -26,6 +26,16 @@ import type {
 } from "./types.js";
 import type { PipelineLlmAdapter } from "./llm.js";
 
+/**
+ * Confidence reported when a multi-unit submission is returned as one group
+ * only because no boundary could be determined (no structural signal, and
+ * the LLM fallback was disabled, unavailable or failed). It is an
+ * "undecided" value, below typical review thresholds, so callers can route
+ * such submissions to review. A single-unit submission is certain and
+ * reports 1.0.
+ */
+export const UNSEGMENTED_FALLBACK_CONFIDENCE = 0.5;
+
 // ---------------------------------------------------------------------------
 // Public request type and entry point
 // ---------------------------------------------------------------------------
@@ -56,7 +66,7 @@ export async function segmentDocuments(
 
   // Single-unit fast path — no segmentation needed.
   if (units.length <= 1) {
-    return singleGroupMap(units);
+    return singleGroupMap(units, 1.0);
   }
 
   // Structural (deterministic) detection — always attempted.
@@ -71,8 +81,9 @@ export async function segmentDocuments(
     if (llmResult !== null) return llmResult;
   }
 
-  // Final fallback: treat the entire submission as one document.
-  return singleGroupMap(units);
+  // Final fallback: treat the entire submission as one document. Nothing
+  // confirmed that, so report it as undecided rather than certain.
+  return singleGroupMap(units, UNSEGMENTED_FALLBACK_CONFIDENCE);
 }
 
 // ---------------------------------------------------------------------------
@@ -360,13 +371,13 @@ function buildGroup(
   };
 }
 
-function singleGroupMap(units: DocumentUnit[]): SegmentationMap {
+function singleGroupMap(units: DocumentUnit[], confidence: number): SegmentationMap {
   return {
     groups: [
       {
         id: "group-1",
         unitIndices: units.map((u) => u.index),
-        confidence: 1.0,
+        confidence,
         segmentationMethod: "single-group",
       },
     ],

@@ -1,0 +1,25 @@
+{
+  "description": "Text mentioning a PDF417 barcode: Tier-A barcode document, below threshold but kept as best result.",
+  "input": {
+    "type": "text",
+    "fileName": "label.txt",
+    "text": "Shipping label\nPDF417 payload follows\nSample parcel reference 0000\n"
+  },
+  "expected": {
+    "groups": [
+      {
+        "units": [
+          1
+        ],
+        "method": "single-group",
+        "confidence": 1,
+        "label": "barcode-document",
+        "tier": "tier-a",
+        "fields": {},
+        "flags": [
+          "barcode-detected-no-type-resolved"
+        ]
+      }
+    ]
+  }
+}
