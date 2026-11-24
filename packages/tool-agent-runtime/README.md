@@ -321,6 +321,14 @@ const replay = createReplayModel(JSON.parse(readFileSync("fixtures/run.cassette.
 
 A cassette stores model responses plus a small fingerprint of each request (message count, last message role, tool names) — never prompts, tool results or API keys. On replay, a fingerprint mismatch fails that call with a `request mismatch` error, so a test notices when the code under test starts sending a different conversation; pass `{ checkRequests: false }` to disable this. Model output can still echo user data: review cassettes before committing them.
 
+## Exported types
+
+Types not shown elsewhere in this README, by area:
+
+- `ToolCallInfo` — `{ id, name, arguments }`, a tool call as the approval hooks see it (arguments already validated).
+- `PrepareStepContext` — `{ turn, steps, messages }`, the input of `prepareStep`; `PrepareStepResult` — `{ model?, systemPrompt?, reasoning?, activeTools?, messages? }`, its overrides for one model call.
+- `StopConditionState` — `{ steps, totalUsage }`, the input of a stop condition after each tool batch.
+
 ## License
 
 MIT.

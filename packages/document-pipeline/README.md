@@ -241,6 +241,25 @@ Apps are free to plug in any `ContinuationHandler` — the pipeline core never d
 
 ---
 
+## Lower-level helpers
+
+`runDocumentPipeline` is the normal entry point. These exports let you run or test single stages:
+
+| Export | Purpose |
+|---|---|
+| `detectMimeType({ buffer, fileName?, declaredMimeType? })` | The MIME type ingestion would use: magic bytes first, then the file extension, then the declared type; a generic container (zip, octet-stream) does not override a specific extension. |
+| `SUPPORTED_MIME_TYPES` | `Set` of accepted MIME types (PDF, common images, Office formats, CSV, text, Markdown, …). |
+| `EmptyFileError`, `FileTooLargeError` (`sizeBytes`, `maxBytes`), `UnsupportedFileTypeError` (`detectedMimeType`) | Thrown by `ingestFile`. `runDocumentPipeline` catches them and returns a failed package with the reason in the processing log. |
+| `DEFAULT_EXTRACTION_LIMITS` | `{ maxPages: 20, maxPixels: 8_000_000, minTextChars: 200 }`, used by `extractUnit` for limits you leave out. |
+| `BUILT_IN_DEFAULTS` | `{ executionMode: "hybrid", tierAThreshold: 0.8, tierBThreshold: 0.6, minTier: "tier-a" }`, the last step of the [priority order](#priority-order). |
+| `createNullOcrPlugin()` | An `OCRPlugin` that recognizes nothing; a safe default and test double. |
+| `validateOcrPlugin(value)` | Type guard: does `value` have the `OCRPlugin` shape? Use it to catch misconfiguration at boot. |
+| `wordBoxesToLayoutBlocks(ocrResult, imageWidth, imageHeight)` | Converts OCR word boxes in pixels to `LayoutBlock`s with normalized (0–1) boxes; boxes already normalized pass through. |
+| `buildContinuationPrompt(pkg, taskIntent, appContext?)` | The prompt `createLlmContinuationHandler` sends; pure, for tests or custom handlers. |
+| `createProcessingLog()`, `logStage(log, stage, status, detail?, startMs?)` | Build a processing log the way the pipeline does (`durationMs` from `startMs`). |
+
+---
+
 ## Integration
 
 The pipeline has zero opinion about HTTP, authentication, persistence, multi-tenancy, or job queues. A typical wiring:
@@ -250,6 +269,18 @@ The pipeline has zero opinion about HTTP, authentication, persistence, multi-ten
 3. Optionally build a `DocumentPolicyRegistry` and (re)load policy bodies from disk using [`@maya-ai/document-policies`](https://www.npmjs.com/package/@maya-ai/document-policies).
 4. In your route handler, read the raw upload, construct a `DocumentPipelineRequest`, and call `runDocumentPipeline(request, deps)`.
 5. Persist or return `result.analysisPackage` and `result.continuationResult` (when present).
+
+## Exported types
+
+Types not shown elsewhere in this README, by area:
+
+- **Request and package:** `DocumentPipelineExecutionMode` (`"deterministic-first" | "hybrid" | "full-multimodal"`), `DocumentPipelineContext` (`{ language?, country?, submissionIntent? }`), `FileRecord` (one ingested file: name, SHA-256, size, MIME type, time), `ProcessingLogEntry` (`{ stage, status, detail?, durationMs? }`).
+- **Units and extraction:** `DocumentUnit` / `DocumentUnitKind` (`"page" | "image" | "sheet" | "section" | "text-block"`), `UnitExtractionResult`, `ExtractedImage`, `BoundingBox` with `CoordSpace` (`"pixels" | "normalized"`), `ExtractionLimits`, and the extractor plugin types `ExtractorPluginRequest` / `ExtractorPluginResult`.
+- **OCR:** `OCRResult` (`{ text, wordBoxes?, confidence?, detectedLanguage? }`), `OCRWordBox` and `OCROptions` (`{ language?, requestLayout? }`).
+- **Segmentation and classification:** `SegmentationRequest`, `SegmentationMap` (`{ groups }`), `SegmentationMethod` (`"structural" | "llm-assisted" | "single-group"`), `ClassificationRequest`, `ClassificationSourceDocument` (a source file passed for native PDF), `ClassificationTier` (`"tier-a" | "tier-b" | "tier-c"`), `ClassifiedDocumentGroup` and `ExtractedField` (`{ name, value, confidence, sourceUnitIndex, boundingBox?, method }`).
+- **LLM adapter parts:** `PipelineImage` (`{ data, mimeType }`) and `PipelineDocument` (`{ data, mimeType, name? }`).
+- **Assembly and continuation:** `AssemblyInput`, `ContinuationRequest`, `ContinuationResult` (`{ results, evidence, unresolvedItems, suggestedNextSteps }`), `ContinuationEvidence`, `UnresolvedItem` and `LlmContinuationOptions` (`{ maxTokens?, sessionIdPrefix? }`).
+- **ZIP:** `ZipExpansionOptions` (`{ maxEntryBytes?, maxUnits?, parallelism? }`), `ZipExtractionParallelism` (`"sequential" | "parallel"`) and `ZipExpansionResult` (`{ fileRecords, entryBuffers, units, warnings }`).
 
 ## License
 

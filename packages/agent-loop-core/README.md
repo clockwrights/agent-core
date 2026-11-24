@@ -221,7 +221,7 @@ Default policy:
 }
 ```
 
-`ToolRegistry` accumulates `RegisteredTool[]` (an `AgentTool` + `{ source, risk }`); `resolve(policy)` returns the filtered list to hand to the LLM. The allow/deny lists are applied after source gates; an empty `allow` means "no name-level filter".
+`ToolRegistry` accumulates `RegisteredTool[]` (an `AgentTool` + `{ source, risk }`); `resolve(policy)` returns the filtered list to hand to the LLM. The allow/deny lists are applied after source gates; an empty `allow` means "no name-level filter". `isToolAllowed(entry, policy)` is the same check for a single entry.
 
 ### Tool result size limits
 
@@ -361,7 +361,7 @@ Supported transports: **stdio**, **SSE**, **streamable-http**.
 | Function | Purpose |
 |---|---|
 | `normalizeMcpConfig(raw)` | Validate a JSON-shaped MCP config; returns `{ config, diagnostics }`. |
-| `createMcpRuntime({ enabled, config })` | Connect to configured servers; exposes `getCatalog()`, `callTool()`, `dispose()`. |
+| `createMcpRuntime({ enabled, config })` | Connect to configured servers; exposes `getCatalog()`, `callTool()`, `dispose()`. `createStdioMcpRuntime` is an older alias of the same function (all transports). |
 | `createMcpToolDefinitions(runtime)` | Turn the runtime catalog into `RegisteredTool[]` (source `mcp`, risk `external`, plus `mcpServer` and the tool's annotation hints). |
 | `createMcpRegistryPreview({...})` | Dev/test helper that lists registered + policy-resolved tools. |
 | `buildMcpAgentToolName(server, tool)` | The deterministic naming function. |
@@ -399,7 +399,7 @@ Names are checked against the [Agent Skills](https://agentskills.io/specificatio
 
 Without `fileAccess`, only `read_skill` is registered, as before. To register the file tool yourself, use `createReadSkillFileTool(skills, { maxResourceBytes? })`; its name is `readSkillFileToolName` (`"read_skill_file"`).
 
-The convenience wrapper `createSkillsRuntimeContext(config)` ties the loader and prompt formatter together.
+The convenience wrapper `createSkillsRuntimeContext(config)` ties the loader and prompt formatter together. `appendSkillsPromptToSystemPrompt(systemPrompt, { skillsPrompt })` appends the skills prompt to a system prompt (unchanged when the skills prompt is empty).
 
 ## Memory subsystem
 
@@ -433,6 +433,8 @@ Default tools registered when you don't override `createToolDefinitions`:
 |---|---|---|
 | `memory_search` | `read` | Scored full-text search; returns path, title, source, score, snippet. |
 | `memory_get` | `read` | Bounded read by path and line window; returns content + line metadata. |
+
+`createMemoryToolDefinitions(runtime)` returns these two definitions (or the runtime's own `createToolDefinitions()` when it returns any). Their names are exported as `memorySearchToolName` and `memoryGetToolName`.
 
 ### Built-in: markdown-wiki memory runtime
 
@@ -511,6 +513,13 @@ Engine methods:
 | `lint()` | Returns `MarkdownWikiLintReport`: missing support files (critical), broken `[[wikilinks]]` (warning), malformed / unknown-type / dangling edges (critical/warning). |
 | `renderIndex(options?)` | Renders a grouped markdown catalog of all files. |
 
+Rendering helpers the engine uses, exported for custom generated files:
+
+- `renderMarkdownWikiIndex({ files, categorizePath?, summarizeContent?, options?, metadata? })` renders the grouped catalog that `renderIndex` produces, from any file list.
+- `extractMarkdownTitle(content)` returns the first `# ` heading (undefined when there is none).
+- `summarizeMarkdownContent(content)` returns a one-line summary (first three content lines, frontmatter and headings skipped, cut at 180 characters).
+- `normalizeMarkdownWikiPath(path)` trims, turns backslashes into `/`, and drops leading and repeated slashes.
+
 Relationship edges are stored as JSONL:
 
 ```json
@@ -582,6 +591,12 @@ Tools exposed when `markdownWikiEngine` is supplied:
 | `wiki_append_log` | `write` | Append a dated action entry to the wiki log. |
 | `wiki_record_relationship` | `write` | Record one de-duplicated typed edge. |
 
+Without `createMemoryRuntimeContext`, register them from an engine directly:
+
+- `createMarkdownWikiMaintenanceToolDefinitions(engine, { provenance? })` returns the four definitions above; with `provenance`, log entries and edges record who wrote them.
+- `buildMarkdownWikiMaintenancePrompt({ availableTools })` returns the "Wiki Maintenance" prompt section for the wiki tools present in `availableTools` (a `Set` of tool names), or `""` when none are.
+- Tool names: `wikiLintToolName`, `wikiUpdateIndexToolName`, `wikiAppendLogToolName`, `wikiRecordRelationshipToolName` (plus `wikiWritePageToolName`, `wikiEditPageToolName` for the page-writing tools).
+
 ## Suggested env var conventions (consumer-side)
 
 This package itself reads no environment variables. The consumer app's bridge typically reads:
@@ -611,6 +626,21 @@ Naming and source (env, file, secrets manager, …) are entirely the consumer's 
 - [`@maya-ai/tool-agent-runtime`](https://www.npmjs.com/package/@maya-ai/tool-agent-runtime) — the underlying multi-turn loop and `AgentTool` types.
 - [`@maya-ai/agent-loop-orchestration`](https://www.npmjs.com/package/@maya-ai/agent-loop-orchestration) — multi-agent delegation built on top of this loop.
 - [`@maya-ai/llm-profiles`](https://www.npmjs.com/package/@maya-ai/llm-profiles) — file/env-driven LLM routing config you can use to construct your `ToolLlmAdapter`.
+
+## Exported types
+
+Types not shown elsewhere in this README, by area:
+
+- **Loops:** `ToolAgentLoopProgressMessages` (`{ start?, retry? }`) and `DocumentAgentLoopProgressMessages` (`{ prepare?, start?, retry?, finalize? }`) override the progress texts; `ToolAgentReasoningLevel` is `"off" | "minimal" | "low" | "medium" | "high" | "xhigh"`; `ToolAgentRuntimeMetadata` is what `ToolLlmAdapter.metadata()` returns (`{ enabled, supports? }`).
+- **Prompt budget:** `PromptBudgetItem` (`{ content, priority }`, higher priority kept first), `FitWithinBudgetOptions` (`{ minimumItemChars? }`) and `BudgetedPromptItem` (an item plus `originalLength`, `truncated`) for `fitWithinBudget`.
+- **Runtime context:** `AgentRuntimeContextFactory<TState>` (`(state) => Promise<AgentRuntimeContext | undefined>`); `AgentRuntimeMcpCapabilitiesConfig` (`{ enabled, config, toolAllow?, toolDeny?, clientName?, clientVersion?, deferTools? }`) and `AgentRuntimeToolPolicyConfig` (a partial `ToolPolicy`) are parts of `AgentRuntimeCapabilitiesConfig`.
+- **Registry:** `ToolMetadata` (`{ source, risk, maxResultChars?, deferred?, mcpServer?, annotations? }`), `ToolAnnotations` (the four MCP boolean hints) and `ResolveToolsOptions` (`{ resultLimits?, executionModeFromRisk? }`).
+- **Approval policy:** `ToolApprovalAction` (`"allow" | "ask" | "deny"`), `ToolApprovalRule` (the `data.rule` values of "ask" decisions) and `EffectiveRiskOptions` (`{ trustReadOnlyHints? }`).
+- **Result limits and clearing:** `ToolResultLimitOptions` (`{ maxChars, store? }`), `ToolOutputStoreOptions` (`{ maxEntries? }`), `ToolResultTruncation` (the `truncation` details of a cut result), `ReadToolOutputDetails` (details of `read_tool_output`), `ToolResultClearingOptions` (options of `createToolResultClearing`) and `ToolSearchOptions` (`{ deferred?, defaultLimit? }`).
+- **MCP:** config types `McpServerConfig` = `McpStdioServerConfig` (`{ transport: "stdio", command, args?, env?, cwd?, connectionTimeoutMs? }`) | `McpHttpServerConfig` (`{ transport, url, headers?, connectionTimeoutMs? }`); `McpTransport` and `McpHttpTransport` (`"sse" | "streamable-http"`); `NormalizeMcpConfigResult` (`{ config, diagnostics }`); `McpDiagnostic` / `McpDiagnosticLevel`; runtime types `McpRuntimeOptions`, `McpToolCatalog`, `McpServerCatalogEntry`, `McpToolCatalogEntry` (with `annotations?`); `McpToolDefinitionOptions` (`{ defer? }`), `McpToolDetails` (details of MCP tool results: server, tool, status, `structuredContent?`) and `McpRegistryPreviewTool`.
+- **Memory:** `MemoryConfig` (input of `createMemoryRuntimeContext`), `MemoryPromptInput` (`{ availableTools }`), `MemorySourceFilter` (a `MemorySource` or `"all"`), tool details `MemorySearchDetails` and `MemoryGetDetails`, provenance types `MemoryOrigin` (`"trusted" | "untrusted" | "unverified"`) and `MemoryProvenanceSource` (`{ session?, actor?, origin? }`), and pinned memory types `PinnedMemoryOptions` and `PinnedMemoryOmission` (`{ path, reason, chars? }`).
+- **Markdown wiki:** `MarkdownWikiMemoryRuntimeConfig` (input of `createMarkdownWikiMemoryRuntime`), `MarkdownWikiIndexRenderOptions` (`{ title?, subtitle?, selfPath?, metadataLabels? }`), `MarkdownWikiIssue` (one lint finding), `MarkdownWikiLogEntry`, `MarkdownWikiRelationship` (one edge), `MarkdownWikiSyncOptions` (`{ log?, relationships? }`), `MarkdownWikiMaintenanceToolOptions` / `WikiMaintenanceToolDetails`, and `MarkdownWikiWriteToolOptions` / `WikiWriteToolDetails` for the page-writing tools.
+- **Skills:** `SkillConfig` (the skills config fields), `LoadSkillsResult` (`{ skills, diagnostics }`), `SkillDiagnostic`, `FormatSkillsPromptOptions` (`{ maxPromptChars?, readToolName?, fileToolName? }`), `SkillToolOptions` (`{ fileAccess?, maxResourceBytes? }`), `ReadSkillFileToolOptions`, and tool details `ReadSkillDetails` and `ReadSkillFileDetails`.
 
 ## License
 

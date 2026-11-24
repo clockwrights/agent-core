@@ -255,6 +255,14 @@ const router = createLlmRouter<Generate>(config, {
 - `pickWeighted(targets, random?)` and `createLoadBalancer(targets, random?)` pick by weight (default 1); inject `random` for deterministic tests.
 - The helper is named `createFailover` so it does not clash with the router's `withFailover` option.
 
+## Exported types
+
+Types not shown elsewhere in this README, by area:
+
+- **Profiles:** `LlmCapabilities` (`{ vision?, documents?, tools?, reasoning?, …custom }`), `LlmPricing` (USD per million tokens: `{ input, output, cacheRead?, cacheWrite? }`, same keys as pi-ai's `Model.cost`), `LlmRoutingTarget` (`{ profile, weight? }`, a load-balance entry) and `ResolvedComponentRouting` (`{ primary, fallback, fallbacks, retry?, loadBalance? }`).
+- **Loading and routing:** `LoadLlmRoutingOptions` (`{ filePath?, env?, readFile?, strict? }`), `CreateLlmRouterOptions<P>` (`{ factory, withFailover?, withFallbacks?, withLoadBalance? }`) and `FallbackContext` (`{ componentId, retry?, profiles }`, passed to `withFallbacks`).
+- **Failover helpers:** `CreateFailoverOptions` (`{ shouldFallback?, retry?, onAttemptFailed?, sleep?, … }`), `FailoverAttempt` (`{ targetIndex, attempt, error, next }`, passed to `onAttemptFailed`), `WeightedTarget<T>` (`{ target, weight? }`) and `AsyncFn<A, R>`.
+
 ## License
 
 MIT.

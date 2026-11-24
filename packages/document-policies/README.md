@@ -251,6 +251,14 @@ The reusable lib needs no changes for a different registry implementation, diffe
 
 ---
 
+## Exported types
+
+Types not shown elsewhere in this README, by area:
+
+- **Loading:** `LoadManifestOptions` (options of `loadPoliciesManifest`), `LoadPoliciesOptions` (`{ readFile? }`) and `LoadConfiguredPoliciesOptions` (both combined).
+- **Front-matter:** `ParsedPolicyFile` (`{ frontMatter?, body }`, returned by `parsePolicyFile`).
+- **Verdicts:** `PolicyVerdictOutcome` (`"pass" | "fail" | "not_applicable" | "uncertain"`), `PolicyEvidence` (`{ quote?, groupId?, fieldName?, sourceUnitIndex? }`), `PolicyVerdictCheck` (`{ verdicts, missingRuleIds, problems }`, returned by `checkPolicyVerdicts`) and `CheckPolicyVerdictsOptions` (`{ requireEvidenceFor? }`).
+
 ## License
 
 MIT.

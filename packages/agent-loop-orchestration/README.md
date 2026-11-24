@@ -167,6 +167,20 @@ import {
   type DelegateTaskToolResultPayload,
   type DelegateToolContext,
 
+  // Batched delegation tool (children in parallel)
+  DELEGATE_TASKS_TOOL_NAME,          // "delegate_tasks"
+  createDelegateTasksTool,
+  createDelegateTasksToolDefinition, // RegisteredTool, source "system", risk "read"
+  delegateTasksParameters,           // { tasks: DelegateTasksTaskInput[] }
+  delegateTasksTaskParameters,       // schema of one task
+  executeDelegateTasks,              // run a batch without the tool wrapper
+  type DelegateTasksInput,
+  type DelegateTasksTaskInput,
+  type DelegateTasksToolContext,
+  type DelegateTasksToolResult,      // details: { total, completed, failed, durationMs }
+  type DelegateTasksResultPayload,
+  type DelegateTasksResultPayloadEntry,
+
   // Orchestrator loop
   OrchestratorPhaseTransitionError,
   computeChildLifecycleCounts,
@@ -360,7 +374,7 @@ Sibling to `delegate_task` (singular). Same domain-neutral name shape, registere
 
 ### Programmatic use
 
-`runChildrenInParallel({ requests, maxConcurrent, executeOne, onWorker? })` is exported for consumers that need parallel fan-out without going through the LLM tool surface. Determinism guarantee: result slot `i` is always the result for `requests[i]`, regardless of completion order. The runner's `executeOne` contract is "always returns an envelope, never throws"; throwing propagates out of the runner (the standard executor `executeChildRun` follows the contract).
+`runChildrenInParallel({ requests, maxConcurrent, executeOne, onWorker? })` (input type `RunChildrenInParallelInput`) is exported for consumers that need parallel fan-out without going through the LLM tool surface. Determinism guarantee: result slot `i` is always the result for `requests[i]`, regardless of completion order. The runner's `executeOne` contract is "always returns an envelope, never throws"; throwing propagates out of the runner (the standard executor `executeChildRun` follows the contract).
 
 ---
 
@@ -581,6 +595,10 @@ The scripted-LLM stub in `orchestratorIntegration.test.ts` is the closest harnes
 6. Optionally provide a richer registry. The in-memory `createInMemoryChildRunRegistry` is fine for one-shot request flows; persistent stores can implement the same `ChildRunRegistry` contract.
 
 The reusable contract is intentionally narrow: `ChildRunRequest`, `ChildRunResultEnvelope`, `OrchestrationPolicy`, `PresetOverrides`, `DelegateToolContext`, `RunOrchestratorInput`. Everything domain-specific (which tools children can call, how the parent's prompt is composed, how the final answer is rendered) flows through these contracts. None of them mention domain vocabulary.
+
+## Exported types
+
+Types not shown elsewhere in this README: `ChildRunExecutionOptions` (`{ onProgress? }`) is reserved for per-call execution overrides and is not read by the executor yet.
 
 ## License
 
