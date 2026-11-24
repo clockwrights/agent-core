@@ -138,6 +138,7 @@ interface ToolAgentOutput {
   turns?: number;              // model calls made by this call
   state?: RunState;            // serializable run state; pass back as resumeFrom
   interruptions?: ToolInterruption[]; // calls waiting for approval when endReason is "interrupted"
+  compactions?: number;        // compactions of the transcript during this call
 }
 ```
 
@@ -173,7 +174,8 @@ output?.usage;     // tokens and cost
 - **Model selection:** with a fixed `model`, `input.model` is ignored (`supports.modelSelection: false`). Pass a function to route on it — for example `model: (input) => modelsBySelector[input.model ?? "default"]`, where you build `modelsBySelector` from your llm-profiles config (an llm-profiles router whose factory returns pi-ai models works the same way: `(input) => router.forComponent(input.model ?? "main-agent")`).
 - `input.reasoning` overrides the adapter's `reasoning` for that call; `"off"` disables extended thinking.
 - `prepareStep` (adapter option) is passed to every run — for example `createToolResultClearing()` (below).
-- `metadata()` returns `{ enabled: true, supports: { limits: true, usage: true, events: true, modelSelection, runState: true, approvals: true } }`, where `modelSelection` is true for the function form of `model`.
+- `compaction` (adapter option) is passed to every run: older turns are replaced by a summary when the prompt reaches the trigger (default 85% of the context window). `compactions` in the output counts them. See [Managing context](#managing-context).
+- `metadata()` returns `{ enabled: true, supports: { limits: true, usage: true, events: true, modelSelection, runState: true, approvals: true, compaction: true } }`, where `modelSelection` is true for the function form of `model`.
 
 ### `runDocumentAgentLoop({ llm, adapter, createRuntimeContext?, onProgress? })`
 
@@ -194,7 +196,7 @@ interface DocumentAgentLoopAdapter<TState, TResult> {
 }
 ```
 
-The loop creates fresh state, builds the runtime context (capabilities like MCP / memory / skills, contributed via `createRuntimeContext`), optionally compacts the prompt if it exceeds `compactionThresholdChars`, runs the tool agent, and finally calls `finalize`. Runtime context cleanup runs in `finally`.
+The loop creates fresh state, builds the runtime context (capabilities like MCP / memory / skills, contributed via `createRuntimeContext`), optionally compacts the prompt if it exceeds `compactionThresholdChars` (a pre-run step for an oversized starting prompt; for growth during the run use the adapter's `compaction` option, see [Managing context](#managing-context)), runs the tool agent, and finally calls `finalize`. Runtime context cleanup runs in `finally`.
 
 ## Tool registry and policy
 
@@ -304,6 +306,26 @@ const llm = createRuntimeToolLlmAdapter({
 | `store` | none | Keep the full text of cleared results; the stub then tells the model to call `read_tool_output` with the id. |
 
 Error results are always kept. Cleared results lose their image parts too (the stub says so). Off unless you pass the hook: nothing is cleared by default.
+
+### Managing context
+
+Three tools, for three different problems. All are off by default and can be combined.
+
+| Problem | Use | What it does |
+|---|---|---|
+| Old tool results crowd every step | `createToolResultClearing()` as `prepareStep` | Replaces stale tool results with short stubs in what the model sees. Cheap, no model call, cache-friendly in batches; the saved transcript keeps everything. |
+| A long run grows past the window | adapter `compaction` option | Replaces older turns with a model-written summary in the run's transcript (and saved state) when the prompt reaches the trigger; retries once after a context-overflow error. |
+| The starting prompt itself is too big | `documentAgentLoop`'s `compactionThresholdChars` + `compact()` | Before the run, your adapter builds a smaller prompt with domain knowledge (which documents or sections to keep). No model call. |
+
+```ts
+const adapter = createRuntimeToolLlmAdapter({
+  model,
+  prepareStep: createToolResultClearing({ store }),
+  compaction: { triggerRatio: 0.85 },   // the default trigger; configurable
+});
+```
+
+Clearing lowers the reported prompt size, so with both on, compaction starts later and runs less often. Compaction keeps the task (the messages before the first reply, including pinned memory) verbatim by default. All options are described in tool-agent-runtime's "Compaction" section.
 
 ### Deferred tools and `tool_search` (opt-in)
 
