@@ -23,10 +23,12 @@ const EXPECTED_KEYS: Record<AgentEvent["type"], string[]> = {
   tool_execution_update: ["args", "partialResult", "toolCallId", "toolName", "type"],
   tool_execution_end: ["isError", "result", "toolCallId", "toolName", "type"],
   tool_approval_requested: ["args", "data", "reason", "toolCallId", "toolName", "type"],
+  compact_boundary: ["keptMessages", "removedMessages", "summary", "summaryIndex", "tokensAfter", "tokensBefore", "trigger", "turn", "type", "usage"],
+  compaction_failed: ["error", "trigger", "turn", "type"],
 };
 
 /** Event types the main scenario does not produce (each has its own test). */
-const SEPARATE_SCENARIO = new Set(["tool_approval_requested"]);
+const SEPARATE_SCENARIO = new Set(["tool_approval_requested", "compact_boundary", "compaction_failed"]);
 
 test("contract version is 1", () => {
   assert.equal(AGENT_EVENT_VERSION, 1);
@@ -102,4 +104,46 @@ test("tool_approval_requested has exactly the documented fields", async () => {
   const end = events.ofType("agent_end")[0]!;
   assert.equal(end.reason, "interrupted");
   assert.deepEqual(Object.keys(end).sort(), ["messages", "reason", "state", "type", "usage"]);
+});
+
+test("compact_boundary and compaction_failed have exactly the documented fields", async () => {
+  const params = Type.Object({});
+  const read: AgentTool<typeof params> = {
+    name: "read",
+    label: "Read",
+    description: "Read.",
+    parameters: params,
+    execute: async () => ({ content: [{ type: "text", text: "x".repeat(400) }], details: {} }),
+  };
+  const usage = { input: 600, output: 10 };
+  const run = async (summarize: () => Promise<{ text: string }>) => {
+    const replay = createReplayModel([
+      replyToolCalls([{ name: "read", id: "a" }], { usage }),
+      replyToolCalls([{ name: "read", id: "b" }], { usage }),
+      replyText("done"),
+    ]);
+    const events = collectEvents();
+    await runToolAgent(
+      {
+        systemPrompt: "s",
+        model: replay.model,
+        tools: [read],
+        prompt: "go",
+        compaction: { triggerTokens: 500, keepRecentTokens: 0, summarize },
+      },
+      events.emit,
+    );
+    replay.dispose();
+    return events;
+  };
+
+  const ok = await run(async () => ({ text: "summary" }));
+  const [boundary] = ok.ofType("compact_boundary");
+  assert.deepEqual(Object.keys(boundary!).sort(), EXPECTED_KEYS.compact_boundary);
+
+  const failed = await run(async () => {
+    throw new Error("no summary today");
+  });
+  const [failure] = failed.ofType("compaction_failed");
+  assert.deepEqual(Object.keys(failure!).sort(), EXPECTED_KEYS.compaction_failed);
 });

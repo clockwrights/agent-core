@@ -105,6 +105,29 @@ export type ToolResultOverride = Partial<Pick<AgentToolResult<any>, "content" | 
 /** A human decision for an interrupted tool call, passed on resume in `approvals`. */
 export type ToolApproval = { approve: true } | { approve: false; message?: string };
 
+/** What started a compaction: the size estimate, a context-overflow error, or `compactMessages`. */
+export type CompactionTrigger = "threshold" | "overflow" | "manual";
+
+/** One compaction of a run's transcript (kept in `RunState.compactions`). */
+export interface CompactionRecord {
+  /** The turn the compaction ran before (1-based); 0 for `compactMessages`. */
+  turn: number;
+  trigger: CompactionTrigger;
+  /** Estimated prompt tokens before and after. */
+  tokensBefore: number;
+  tokensAfter: number;
+  /**
+   * Messages of the old transcript replaced by the summary message, starting
+   * at `summaryIndex` (this includes the initial user message the summary
+   * was added to). Rebuild: `messages.splice(summaryIndex, removedMessages, summary)`.
+   */
+  removedMessages: number;
+  /** Index of the message holding the summary. */
+  summaryIndex: number;
+  /** Transcript length right after the compaction (replies from this index on have current usage). */
+  messageCount: number;
+}
+
 /** One completed turn: the model call and the tool batch it triggered. */
 export interface AgentStep {
   /** 1-based turn number. */
@@ -213,4 +236,29 @@ export type AgentEvent =
       args: Record<string, unknown>;
       reason?: string;
       data?: Record<string, unknown>;
+    }
+  | {
+      type: "compact_boundary";
+      trigger: CompactionTrigger;
+      /** The turn the compaction ran before (1-based). */
+      turn: number;
+      /** Estimated prompt tokens before and after. */
+      tokensBefore: number;
+      tokensAfter: number;
+      /** Old messages replaced by `summary`, starting at `summaryIndex`. */
+      removedMessages: number;
+      summaryIndex: number;
+      /** Transcript length after the compaction. */
+      keptMessages: number;
+      /** The message that now holds the summary. */
+      summary: AgentMessage;
+      /** Usage of the summariser call (also added to the run's usage). */
+      usage: AgentUsage;
+    }
+  | {
+      type: "compaction_failed";
+      trigger: CompactionTrigger;
+      turn: number;
+      /** Why the summariser failed. The run continues uncompacted. */
+      error: string;
     };
