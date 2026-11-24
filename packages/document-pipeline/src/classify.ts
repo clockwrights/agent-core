@@ -35,7 +35,7 @@ import {
   buildClassificationPrompt,
   buildFieldExtractionPrompt,
 } from "./policy.js";
-import type { PipelineLlmAdapter } from "./llm.js";
+import type { PipelineDocument, PipelineLlmAdapter } from "./llm.js";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -70,6 +70,22 @@ export type ClassificationRequest = {
    * Defaults to "tier-a" (full cascade).
    */
   minTier?: ClassificationTier;
+  /**
+   * Source files Tier C may attach natively (today: PDFs). Used only when the
+   * Tier C adapter sets `supportsDocuments`, and only for groups whose units
+   * all come from one listed file; other groups keep the rendered-image path.
+   * `runDocumentPipeline` fills this when `deps.nativePdf` is set.
+   */
+  sourceDocuments?: ClassificationSourceDocument[];
+};
+
+export type ClassificationSourceDocument = {
+  /** Index into the submission's file records (matches `DocumentUnit.sourceFileIndex`). */
+  sourceFileIndex: number;
+  /** Base64-encoded file bytes. */
+  data: string;
+  mimeType: string;
+  name?: string;
 };
 
 const TIER_A_CONFIDENCE_THRESHOLD = 0.8;
@@ -144,7 +160,7 @@ async function classifyGroup(
       return (ex?.images.length ?? 0) > 0;
     });
 
-    if (hasImages) {
+    if (hasImages || nativeDocumentFor(group, request, tierCAdapter!)) {
       const tierC = await runTierC(group, tierB, request, tierCAdapter!);
       if (tierC) return tierC;
     }
@@ -180,7 +196,8 @@ async function classifyGroup(
  * for known barcode / separator anchors.
  *
  * MRZ line: at least 30 consecutive chars matching [A-Z0-9<]
- * (TD1 = 30, TD2 = 36, TD3/passport = 44 chars per line)
+ * (TD1 = 30, TD2 = 36, TD3/passport = 44 chars per line).
+ * Segmentation uses a looser ≥ 20 boundary hint (`segment.ts`); see there.
  */
 const MRZ_LINE_RE = /^[A-Z][A-Z0-9<]{29,}$/m;
 
@@ -275,12 +292,12 @@ function detectMrz(
       // Date of birth: positions 13–18 (YYMMDD)
       const dob = trimmed.slice(13, 19);
       if (/^\d{6}$/.test(dob)) {
-        fields.push(mrzField("date_of_birth", formatMrzDate(dob), group.unitIndices[0]));
+        fields.push(mrzField("date_of_birth", formatMrzDate(dob, "birth"), group.unitIndices[0]));
       }
       // Expiry: positions 21–26
       const expiry = trimmed.slice(21, 27);
       if (/^\d{6}$/.test(expiry)) {
-        fields.push(mrzField("expiry_date", formatMrzDate(expiry), group.unitIndices[0]));
+        fields.push(mrzField("expiry_date", formatMrzDate(expiry, "expiry"), group.unitIndices[0]));
       }
       break;
     }
@@ -307,11 +324,27 @@ function mrzField(name: string, value: string, sourceUnitIndex: number): Extract
   return { name, value, confidence: 0.88, sourceUnitIndex, method: "deterministic" };
 }
 
-function formatMrzDate(yymmdd: string): string {
-  // Heuristic: years 00-29 → 2000s, 30-99 → 1900s
+/**
+ * Expand an MRZ YYMMDD date to YYYY-MM-DD. MRZ dates carry no century, so
+ * it is inferred from the field and the current year:
+ * - birth date: 20YY unless that is in the future, else 19YY;
+ * - expiry date: 20YY unless that is more than 50 years ahead, else 19YY
+ *   (documents expiring from 2030 on stay in the 2000s; long-expired ones
+ *   from the 1990s stay in the 1900s).
+ */
+function formatMrzDate(yymmdd: string, kind: "birth" | "expiry", now: Date = new Date()): string {
   const yy = parseInt(yymmdd.slice(0, 2), 10);
-  const century = yy <= 29 ? "20" : "19";
-  return `${century}${yymmdd.slice(0, 2)}-${yymmdd.slice(2, 4)}-${yymmdd.slice(4, 6)}`;
+  const currentYear = now.getUTCFullYear();
+  const in2000s = 2000 + yy;
+  const year =
+    kind === "birth"
+      ? in2000s > currentYear
+        ? 1900 + yy
+        : in2000s
+      : in2000s > currentYear + 50
+        ? 1900 + yy
+        : in2000s;
+  return `${year}-${yymmdd.slice(2, 4)}-${yymmdd.slice(4, 6)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +417,48 @@ async function runTierB(
 // Tier C — Multimodal LLM
 // ---------------------------------------------------------------------------
 
+/**
+ * The native document Tier C may attach for this group, or null. Requires an
+ * adapter with `supportsDocuments`, and every unit of the group coming from
+ * one file listed in `request.sourceDocuments`. `pageHint` names the group's
+ * pages within that file ("page 2", "pages 1-3", "pages 1, 3").
+ */
+function nativeDocumentFor(
+  group: DocumentGroup,
+  request: ClassificationRequest,
+  adapter: PipelineLlmAdapter,
+): { document: PipelineDocument; pageHint: string } | null {
+  if (!adapter.supportsDocuments || !request.sourceDocuments?.length) return null;
+  const groupUnits = group.unitIndices
+    .map((idx) => request.units.find((u) => u.index === idx))
+    .filter((u): u is DocumentUnit => u !== undefined);
+  if (groupUnits.length === 0) return null;
+  const fileIndex = groupUnits[0]!.sourceFileIndex;
+  if (groupUnits.some((u) => u.sourceFileIndex !== fileIndex)) return null;
+  const source = request.sourceDocuments.find((d) => d.sourceFileIndex === fileIndex);
+  if (!source) return null;
+
+  // Page numbers within the file: position among that file's units, 1-based.
+  const fileUnitIndices = request.units
+    .filter((u) => u.sourceFileIndex === fileIndex)
+    .map((u) => u.index)
+    .sort((a, b) => a - b);
+  const pages = groupUnits
+    .map((u) => fileUnitIndices.indexOf(u.index) + 1)
+    .sort((a, b) => a - b);
+  const contiguous = pages.every((p, i) => i === 0 || p === pages[i - 1]! + 1);
+  const pageHint =
+    pages.length === 1
+      ? `page ${pages[0]}`
+      : contiguous
+        ? `pages ${pages[0]}-${pages[pages.length - 1]}`
+        : `pages ${pages.join(", ")}`;
+
+  const document: PipelineDocument = { data: source.data, mimeType: source.mimeType };
+  if (source.name !== undefined) document.name = source.name;
+  return { document, pageHint };
+}
+
 async function runTierC(
   group: DocumentGroup,
   tierBResult: ClassifiedDocumentGroup | null,
@@ -391,17 +466,21 @@ async function runTierC(
   adapter: PipelineLlmAdapter,
 ): Promise<ClassifiedDocumentGroup | null> {
 
-  // Collect all rendered images for this group.
+  // Native PDF (opt-in) replaces the rendered images for the group's source
+  // file; otherwise collect all rendered images for this group.
+  const native = nativeDocumentFor(group, request, adapter);
   const images: Array<{ data: string; mimeType: string }> = [];
-  for (const idx of group.unitIndices) {
-    const ex = request.extractions.find((e) => e.unitIndex === idx);
-    for (const img of ex?.images ?? []) {
-      images.push({ data: img.data, mimeType: img.mimeType });
+  if (!native) {
+    for (const idx of group.unitIndices) {
+      const ex = request.extractions.find((e) => e.unitIndex === idx);
+      for (const img of ex?.images ?? []) {
+        images.push({ data: img.data, mimeType: img.mimeType });
+      }
     }
+    if (images.length === 0) return null;
   }
-  if (images.length === 0) return null;
 
-  // Build a classification prompt that references the attached images.
+  // Build a classification prompt that references the attachments.
   const { systemPrompt, userPrompt } = buildClassificationPrompt(
     request.policy,
     group,
@@ -410,20 +489,24 @@ async function runTierC(
     request.context,
   );
 
-  const imageHint =
-    `\n\nThe ${images.length} page image(s) attached to this message are the rendered ` +
-    `pages for this document group. Use them alongside the text content above to improve ` +
-    `classification and field extraction accuracy.`;
+  const attachmentHint = native
+    ? `\n\nThe PDF attached to this message is the source file for this document group; ` +
+      `the group covers ${native.pageHint} of it. Use it alongside the text content above to ` +
+      `improve classification and field extraction accuracy.`
+    : `\n\nThe ${images.length} page image(s) attached to this message are the rendered ` +
+      `pages for this document group. Use them alongside the text content above to improve ` +
+      `classification and field extraction accuracy.`;
 
   let responseText: string | undefined;
   try {
     const output = await adapter.generate({
       systemPrompt,
-      prompt: userPrompt + imageHint,
+      prompt: userPrompt + attachmentHint,
       sessionId: `doc-classify-multimodal-${group.id}`,
       maxTokens: 1500,
-      // Real multimodal call: the adapter forwards images as image content parts.
-      images,
+      // Real multimodal call: the adapter forwards images as image content
+      // parts, or the source PDF as a document part.
+      ...(native ? { documents: [native.document] } : { images }),
     });
     responseText = output?.text?.trim();
   } catch {
@@ -449,7 +532,7 @@ async function runTierC(
     const refinedValue = await refineFieldWithImage(
       field.name,
       parsed.label,
-      images[0],
+      native ? { document: native.document, pageHint: native.pageHint } : { image: images[0]! },
       request,
       adapter,
     );
@@ -477,22 +560,26 @@ async function runTierC(
 async function refineFieldWithImage(
   fieldName: string,
   documentLabel: string,
-  image: { data: string; mimeType: string },
+  attachment:
+    | { image: { data: string; mimeType: string } }
+    | { document: PipelineDocument; pageHint: string },
   request: ClassificationRequest,
   adapter: PipelineLlmAdapter,
 ): Promise<{ value: string; confidence: number } | null> {
   const prompt = buildFieldExtractionPrompt(fieldName, documentLabel, request.policy);
+  const isDocument = "document" in attachment;
 
   let responseText: string | undefined;
   try {
     const output = await adapter.generate({
-      systemPrompt:
-        "You are a document field extraction assistant. Extract exactly the field requested from the image.",
+      systemPrompt: isDocument
+        ? `You are a document field extraction assistant. Extract exactly the field requested from ${attachment.pageHint} of the attached PDF.`
+        : "You are a document field extraction assistant. Extract exactly the field requested from the image.",
       prompt,
       sessionId: `doc-field-${fieldName}-${documentLabel}`,
       maxTokens: 128,
-      // The image must travel as a real attachment, not just be referenced in text.
-      images: [image],
+      // The attachment must travel as a real content part, not just be referenced in text.
+      ...(isDocument ? { documents: [attachment.document] } : { images: [attachment.image] }),
     });
     responseText = output?.text?.trim();
   } catch {

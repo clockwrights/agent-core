@@ -1,3 +1,5 @@
+import { collectPinnedMemory, type PinnedMemoryOptions } from "../pinnedMemory.js";
+
 export interface MarkdownWikiEngineFile {
   path: string;
   content: string;
@@ -26,6 +28,8 @@ export interface MarkdownWikiRelationship {
   type: string;
   evidence: string;
   date?: string;
+  /** Who recorded the edge; set when the maintenance tools are given a provenance source. */
+  provenance?: { tool: string; origin: string; session?: string; actor?: string };
 }
 
 export interface MarkdownWikiLogEntry {
@@ -79,6 +83,8 @@ export interface MarkdownWikiEngineConfig {
   categorizePath?: (path: string) => string;
   summarizeContent?: (content: string) => string;
   clock?: () => string;
+  /** When set, lint warns if the pinned (always-loaded) tier is over budget or holds untrusted or missing pages. */
+  pinned?: PinnedMemoryOptions;
 }
 
 export interface MarkdownWikiSyncOptions {
@@ -95,6 +101,8 @@ export interface MarkdownWikiEngine {
   readRelationships(): MarkdownWikiRelationship[];
   lint(): MarkdownWikiLintReport;
   renderIndex(options?: MarkdownWikiIndexRenderOptions): string;
+  /** Paths the engine maintains itself (support, generated, log, relationship files). */
+  managedPaths?(): string[];
 }
 
 const defaultLogPath = "log.md";
@@ -211,12 +219,20 @@ export function extractMarkdownTitle(content: string): string | undefined {
 }
 
 export function summarizeMarkdownContent(content: string): string {
-  const lines = content
+  // Leading frontmatter (tags, provenance) is metadata, not summary text.
+  const lines = stripLeadingFrontmatter(content)
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("#") && !line.startsWith("---") && !line.startsWith("_Auto-generated"));
   const text = lines.slice(0, 3).join(" ").replace(/\s+/g, " ");
   return text.length > 180 ? `${text.slice(0, 177)}...` : text;
+}
+
+function stripLeadingFrontmatter(content: string): string {
+  const normalized = content.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) return normalized;
+  const end = normalized.indexOf("\n---", 4);
+  return end === -1 ? normalized : normalized.slice(end + 4);
 }
 
 export function normalizeMarkdownWikiPath(filePath: string | undefined): string {
@@ -321,6 +337,7 @@ class DefaultMarkdownWikiEngine implements MarkdownWikiEngine {
     issues.push(...this.checkSupportFiles());
     issues.push(...this.checkBrokenWikiLinks());
     issues.push(...this.checkRelationships());
+    issues.push(...this.checkPinnedMemory());
     return {
       generatedAt: this.nowIso(),
       issueCount: issues.length,
@@ -329,6 +346,17 @@ class DefaultMarkdownWikiEngine implements MarkdownWikiEngine {
       infoCount: issues.filter((issue) => issue.severity === "info").length,
       issues
     };
+  }
+
+  managedPaths(): string[] {
+    return Array.from(
+      new Set([
+        ...this.requiredFiles.map((file) => normalizeMarkdownWikiPath(file.path)),
+        ...this.generatedFiles.map((file) => normalizeMarkdownWikiPath(file.path)),
+        this.logPath,
+        this.relationshipsPath
+      ])
+    );
   }
 
   renderIndex(options?: MarkdownWikiIndexRenderOptions): string {
@@ -350,6 +378,44 @@ class DefaultMarkdownWikiEngine implements MarkdownWikiEngine {
       readRelationships: () => this.readRelationships(),
       renderIndex: (options) => this.renderIndex(options)
     };
+  }
+
+  private checkPinnedMemory(): MarkdownWikiIssue[] {
+    if (!this.config.pinned) return [];
+    const pinned = collectPinnedMemory(this.config.store.listFiles(), this.config.pinned);
+    const issues: MarkdownWikiIssue[] = [];
+    if (pinned.overBudget) {
+      issues.push({
+        id: "pinned-over-budget",
+        severity: "warning",
+        category: "pinned-memory",
+        file: this.config.pinned.prefix ?? pinned.omitted.find((o) => o.reason === "over_budget")?.path ?? "",
+        message: `Pinned memory needs ${pinned.requestedChars} characters but the budget is ${pinned.maxChars}; ${pinned.omitted.filter((o) => o.reason === "over_budget").length} page(s) are left out of every session.`,
+        suggestion: "Condense the pinned pages or move detail into regular pages that are searched on demand."
+      });
+    }
+    for (const omission of pinned.omitted) {
+      if (omission.reason === "untrusted") {
+        issues.push({
+          id: `pinned-untrusted-${omission.path}`,
+          severity: "warning",
+          category: "pinned-memory",
+          file: omission.path,
+          message: "Pinned page has untrusted provenance and is excluded from the always-loaded tier.",
+          suggestion: "Review the page; rewrite it from a trusted session if it should stay pinned."
+        });
+      } else if (omission.reason === "missing") {
+        issues.push({
+          id: `pinned-missing-${omission.path}`,
+          severity: "warning",
+          category: "pinned-memory",
+          file: omission.path,
+          message: "Pinned page does not exist.",
+          suggestion: "Create the page or remove it from the pinned paths."
+        });
+      }
+    }
+    return issues;
   }
 
   private checkSupportFiles(): MarkdownWikiIssue[] {

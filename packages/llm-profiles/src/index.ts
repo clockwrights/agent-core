@@ -9,11 +9,27 @@
 
 export type {
   LlmProfile,
+  LlmCapabilities,
+  LlmPricing,
+  LlmRetryPolicy,
+  LlmRoutingTarget,
   ComponentRouting,
+  ResolvedComponentRouting,
   LlmRoutingConfig,
   LoadLlmRoutingOptions,
 } from "./profiles.js";
-export { loadLlmRoutingConfig, resolveComponentRouting } from "./profiles.js";
+export { LlmProfilesConfigError, loadLlmRoutingConfig, resolveComponentRouting } from "./profiles.js";
 
-export type { LlmRouter, CreateLlmRouterOptions } from "./router.js";
+export { REDACTED, redactProfile, createSecretRedactor } from "./redact.js";
+
+export type { LlmRouter, CreateLlmRouterOptions, FallbackContext } from "./router.js";
 export { createLlmRouter } from "./router.js";
+
+export type { AsyncFn, FailoverAttempt, CreateFailoverOptions, WeightedTarget } from "./failover.js";
+export {
+  createFailover,
+  createLoadBalancer,
+  pickWeighted,
+  getErrorStatus,
+  FailoverTimeoutError,
+} from "./failover.js";

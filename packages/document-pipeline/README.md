@@ -10,6 +10,8 @@ The pipeline is provider-neutral. The LLM, the OCR engine, the policy registry, 
 npm install @maya-ai/document-pipeline
 ```
 
+**Requires Node.js 22 or newer** (the `file-type` dependency used for MIME sniffing needs it).
+
 Optional peer dependencies (declared as `peerDependencies` with `optional: true`):
 
 | Package | Needed for |
@@ -43,12 +45,14 @@ const result: DocumentPipelineResult = await runDocumentPipeline(request, deps);
 | `policyRegistry` | `DocumentPolicyRegistry` | Resolves `request.policyName` to a `DocumentPolicy`. |
 | `extraExtractors` | `ExtractorPlugin[]` | Merged with the built-in extractors. |
 | `continuationHandler` | `ContinuationHandler` | Called after assembly when `request.taskIntent` is present. |
+| `nativePdf` | `boolean \| { maxBytes?: number }` | Opt-in, default off. Tier C attaches the source PDF as a native document instead of rendered page images — see [Native PDF](#native-pdf-opt-in). |
 
 The pipeline depends on a **narrow LLM adapter** (`PipelineLlmAdapter`), not on any concrete provider:
 
 ```ts
 export interface PipelineLlmAdapter {
   readonly enabled: boolean;
+  readonly supportsDocuments?: boolean; // forwards `documents` (native PDF); default false
   generate(request: PipelineLlmRequest): Promise<PipelineLlmResponse | undefined>;
 }
 
@@ -58,10 +62,27 @@ type PipelineLlmRequest = {
   sessionId: string;
   maxTokens?: number;
   images?: { data: string; mimeType: string }[]; // base64-encoded for Tier C
+  documents?: { data: string; mimeType: string; name?: string }[]; // native PDF, opt-in
 };
 ```
 
-The pipeline never sends tool definitions through this adapter — tool use belongs to the agent loop, not the pipeline. Adapters that don't support multimodal calls SHOULD ignore `images` and record that they did so.
+The pipeline never sends tool definitions through this adapter — tool use belongs to the agent loop, not the pipeline. Adapters that don't support multimodal calls SHOULD ignore `images` and record that they did so. `documents` is only ever sent to adapters that set `supportsDocuments: true`.
+
+### Native PDF (opt-in)
+
+Some providers read a PDF directly (text layer and page images together), which is often more accurate than rendered page images and works for text PDFs that produced no images. To use it:
+
+```ts
+await runDocumentPipeline(request, {
+  tierCAdapter: myPdfCapableAdapter, // sets supportsDocuments: true and forwards `documents`
+  nativePdf: true,                   // or { maxBytes: 10 * 1024 * 1024 }
+});
+```
+
+- Applies to Tier C only, for groups whose pages all come from one PDF in the submission (single PDF or a PDF inside a ZIP). The whole file is attached once per call, and the prompt names the group's pages ("pages 2-3 of it"). Low-confidence field refinement sends the same PDF.
+- With a native PDF available, Tier C runs even when the group has no rendered images.
+- PDFs larger than `maxBytes` (default `NATIVE_PDF_MAX_BYTES`, 32 MiB), groups spanning files, non-PDF sources, and adapters without `supportsDocuments` keep the rendered-image path unchanged.
+- Calling `classifyGroups` directly: pass `sourceDocuments: [{ sourceFileIndex, data, mimeType, name }]`.
 
 ---
 
@@ -77,6 +98,18 @@ The pipeline never sends tool definitions through this adapter — tool use belo
 | 6 | Assemble | `assembleAnalysisPackage` | Always succeeds; warns about inconsistencies in log |
 | 7 | Continue | `continuationHandler` | Skipped unless deps + `request.taskIntent` are both present |
 
+### Segmentation result
+
+Each `DocumentGroup` carries `segmentationMethod` and a `confidence` in [0, 1]:
+
+| `segmentationMethod` | Meaning | `confidence` |
+|---|---|---|
+| `structural` | Deterministic boundary signals (MRZ lines, form feeds, separator lines, blank units) | `0.8` |
+| `llm-assisted` | The LLM decided the boundaries | `0.65`; units the LLM left out are collected into a trailing group with `0.4` |
+| `single-group` | The whole submission is one group | `1.0` for a single-unit submission; `UNSEGMENTED_FALLBACK_CONFIDENCE` (`0.5`) when a multi-unit submission could not be split (no structural signal and the LLM fallback disabled, unavailable or failed) |
+
+Route low-confidence groups — in particular the `0.5` fallback — to review rather than treating them as one confirmed document.
+
 ---
 
 ## Three-Tier Classification Cascade
@@ -87,7 +120,7 @@ Each segmented document group is classified by a cascade. Each tier has a confid
 |------|-----------|------|-----------|
 | **A — Deterministic** | MRZ regex (TD3 passport / TD2 / TD1 ID), barcode anchor (CODE128/PDF417/QR/etc.), heuristic field parsing | None | Always (unless `minTier=tier-b` or `tier-c`) |
 | **B — LLM text** | Policy-injected text prompt with extracted text snippets | One LLM call | Tier A confidence below `tierAThreshold` AND `executionMode != deterministic-first` |
-| **C — Multimodal LLM** | Same prompt + actual rendered page images attached as `ImageContent` parts | One+ LLM calls with image bytes | Tier B confidence below `tierBThreshold` AND group has rendered images AND `executionMode` is `hybrid` or `full-multimodal` |
+| **C — Multimodal LLM** | Same prompt + actual rendered page images attached as `ImageContent` parts | One+ LLM calls with image bytes | Tier B confidence below `tierBThreshold` AND group has rendered images (or a native PDF, when `nativePdf` is on) AND `executionMode` is `hybrid` or `full-multimodal` |
 
 ### Execution modes
 
@@ -181,6 +214,8 @@ Policies are natural-language rule sets injected into Tier-B and Tier-C prompts:
 
 When no policy is provided, the prompts run in **open-vocabulary mode** — the model classifies freely, marking everything as `unsupported: false`.
 
+Audit trail: every `AnalysisPackage` records the governing policy as `policyRef: { name, version, contentHash }` (also when the pipeline aborts at ingest, so the log shows which policy was requested), and the continuation prompt cites it as `name@version#contentHash`. `policyRef` is `null` in open-vocabulary mode or when the named policy is not registered.
+
 For loading policy bodies from external files (manifest + Markdown bodies), see the sibling package [`@maya-ai/document-policies`](https://www.npmjs.com/package/@maya-ai/document-policies). It emits a plain `LoadedPolicy[]`; the consumer app glues those into a `DocumentPolicyRegistry`.
 
 ---
@@ -206,6 +241,25 @@ Apps are free to plug in any `ContinuationHandler` — the pipeline core never d
 
 ---
 
+## Lower-level helpers
+
+`runDocumentPipeline` is the normal entry point. These exports let you run or test single stages:
+
+| Export | Purpose |
+|---|---|
+| `detectMimeType({ buffer, fileName?, declaredMimeType? })` | The MIME type ingestion would use: magic bytes first, then the file extension, then the declared type; a generic container (zip, octet-stream) does not override a specific extension. |
+| `SUPPORTED_MIME_TYPES` | `Set` of accepted MIME types (PDF, common images, Office formats, CSV, text, Markdown, …). |
+| `EmptyFileError`, `FileTooLargeError` (`sizeBytes`, `maxBytes`), `UnsupportedFileTypeError` (`detectedMimeType`) | Thrown by `ingestFile`. `runDocumentPipeline` catches them and returns a failed package with the reason in the processing log. |
+| `DEFAULT_EXTRACTION_LIMITS` | `{ maxPages: 20, maxPixels: 8_000_000, minTextChars: 200 }`, used by `extractUnit` for limits you leave out. |
+| `BUILT_IN_DEFAULTS` | `{ executionMode: "hybrid", tierAThreshold: 0.8, tierBThreshold: 0.6, minTier: "tier-a" }`, the last step of the [priority order](#priority-order). |
+| `createNullOcrPlugin()` | An `OCRPlugin` that recognizes nothing; a safe default and test double. |
+| `validateOcrPlugin(value)` | Type guard: does `value` have the `OCRPlugin` shape? Use it to catch misconfiguration at boot. |
+| `wordBoxesToLayoutBlocks(ocrResult, imageWidth, imageHeight)` | Converts OCR word boxes in pixels to `LayoutBlock`s with normalized (0–1) boxes; boxes already normalized pass through. |
+| `buildContinuationPrompt(pkg, taskIntent, appContext?)` | The prompt `createLlmContinuationHandler` sends; pure, for tests or custom handlers. |
+| `createProcessingLog()`, `logStage(log, stage, status, detail?, startMs?)` | Build a processing log the way the pipeline does (`durationMs` from `startMs`). |
+
+---
+
 ## Integration
 
 The pipeline has zero opinion about HTTP, authentication, persistence, multi-tenancy, or job queues. A typical wiring:
@@ -215,6 +269,18 @@ The pipeline has zero opinion about HTTP, authentication, persistence, multi-ten
 3. Optionally build a `DocumentPolicyRegistry` and (re)load policy bodies from disk using [`@maya-ai/document-policies`](https://www.npmjs.com/package/@maya-ai/document-policies).
 4. In your route handler, read the raw upload, construct a `DocumentPipelineRequest`, and call `runDocumentPipeline(request, deps)`.
 5. Persist or return `result.analysisPackage` and `result.continuationResult` (when present).
+
+## Exported types
+
+Types not shown elsewhere in this README, by area:
+
+- **Request and package:** `DocumentPipelineExecutionMode` (`"deterministic-first" | "hybrid" | "full-multimodal"`), `DocumentPipelineContext` (`{ language?, country?, submissionIntent? }`), `FileRecord` (one ingested file: name, SHA-256, size, MIME type, time), `ProcessingLogEntry` (`{ stage, status, detail?, durationMs? }`).
+- **Units and extraction:** `DocumentUnit` / `DocumentUnitKind` (`"page" | "image" | "sheet" | "section" | "text-block"`), `UnitExtractionResult`, `ExtractedImage`, `BoundingBox` with `CoordSpace` (`"pixels" | "normalized"`), `ExtractionLimits`, and the extractor plugin types `ExtractorPluginRequest` / `ExtractorPluginResult`.
+- **OCR:** `OCRResult` (`{ text, wordBoxes?, confidence?, detectedLanguage? }`), `OCRWordBox` and `OCROptions` (`{ language?, requestLayout? }`).
+- **Segmentation and classification:** `SegmentationRequest`, `SegmentationMap` (`{ groups }`), `SegmentationMethod` (`"structural" | "llm-assisted" | "single-group"`), `ClassificationRequest`, `ClassificationSourceDocument` (a source file passed for native PDF), `ClassificationTier` (`"tier-a" | "tier-b" | "tier-c"`), `ClassifiedDocumentGroup` and `ExtractedField` (`{ name, value, confidence, sourceUnitIndex, boundingBox?, method }`).
+- **LLM adapter parts:** `PipelineImage` (`{ data, mimeType }`) and `PipelineDocument` (`{ data, mimeType, name? }`).
+- **Assembly and continuation:** `AssemblyInput`, `ContinuationRequest`, `ContinuationResult` (`{ results, evidence, unresolvedItems, suggestedNextSteps }`), `ContinuationEvidence`, `UnresolvedItem` and `LlmContinuationOptions` (`{ maxTokens?, sessionIdPrefix? }`).
+- **ZIP:** `ZipExpansionOptions` (`{ maxEntryBytes?, maxUnits?, parallelism? }`), `ZipExtractionParallelism` (`"sequential" | "parallel"`) and `ZipExpansionResult` (`{ fileRecords, entryBuffers, units, warnings }`).
 
 ## License
 

@@ -24,30 +24,72 @@ import type {
 
 const SUMMARY_MAX_CHARS = 500;
 
+/**
+ * End reasons meaning "stopped early" → status `partial`: a run limit, or a
+ * tool call waiting for approval (`interrupted`).
+ */
+const PARTIAL_END_REASONS = new Set(["max_turns", "max_tool_calls", "budget", "interrupted"]);
+
+/**
+ * Project an adapter output onto a result envelope. The status follows the
+ * adapter's `endReason` when it reports one:
+ * - limit reasons (`max_turns`, `max_tool_calls`, `budget`) and `interrupted`
+ *   (waiting for tool approval; `interruptions` kept) → `partial`
+ * - `error` → `failed` (code `llm_error`, retryable)
+ * - `aborted` → `cancelled`
+ * - anything else, or no end reason (older adapters) → `completed`
+ * Text, tool calls and usage are kept in every case.
+ */
 export function toChildRunResultEnvelope(input: {
   request: ChildRunRequest;
   output: ToolAgentOutput | undefined;
   startedAt: string;
   endedAt: string;
 }): ChildRunResultEnvelope {
-  const text = input.output?.text ?? "";
-  const toolCalls = (input.output?.toolCalls ?? []).map((tc) => ({
+  const output = input.output;
+  const text = output?.text ?? "";
+  const toolCalls = (output?.toolCalls ?? []).map((tc) => ({
     name: tc.name,
     isError: tc.isError
   }));
-  const summary = buildSummary(text);
+  const endReason = output?.endReason;
+
+  let status: ChildRunStatus = "completed";
+  let failure: ChildRunFailure | undefined;
+  const warnings: string[] = [];
+  if (endReason && PARTIAL_END_REASONS.has(endReason)) {
+    status = "partial";
+    warnings.push(
+      endReason === "interrupted"
+        ? `Child stopped to wait for approval of ${output?.interruptions?.length ?? 0} tool call(s); the result may be incomplete.`
+        : `Child stopped early (${endReason}); the result may be incomplete.`
+    );
+  } else if (endReason === "error") {
+    status = "failed";
+    failure = { code: "llm_error", message: output?.errorMessage ?? "Model call failed", retryable: true };
+  } else if (endReason === "aborted") {
+    status = "cancelled";
+    failure = { code: "cancelled", message: output?.errorMessage ?? "Child run was cancelled", retryable: false };
+  }
+
   return {
     runId: input.request.runId,
     parentRunId: input.request.parentRunId,
     label: input.request.label,
-    status: "completed",
-    summary,
+    status,
+    summary: failure ? `Child run ${status}: ${failure.message}` : buildSummary(text),
     text: text || undefined,
     toolCalls,
+    ...(warnings.length ? { warnings } : {}),
+    ...(failure ? { failure } : {}),
     startedAt: input.startedAt,
     endedAt: input.endedAt,
     durationMs: durationMsBetween(input.startedAt, input.endedAt),
-    idempotencyKey: input.request.idempotencyKey
+    idempotencyKey: input.request.idempotencyKey,
+    ...(output?.usage ? { usage: output.usage } : {}),
+    ...(endReason ? { endReason } : {}),
+    ...(output?.turns !== undefined ? { turns: output.turns } : {}),
+    ...(output?.interruptions?.length ? { interruptions: output.interruptions } : {})
     // proposedChanges intentionally omitted in Phase 1 (see ChildRunResultEnvelope JSDoc).
   };
 }

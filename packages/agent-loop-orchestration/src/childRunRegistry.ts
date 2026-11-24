@@ -123,8 +123,9 @@ export async function withChildTimeout<T>(
  */
 const ALLOWED_TRANSITIONS: Record<ChildRunStatus, ChildRunStatus[]> = {
   pending: ["running", "cancelled", "failed", "timed_out"],
-  running: ["completed", "failed", "timed_out", "cancelled"],
+  running: ["completed", "partial", "failed", "timed_out", "cancelled"],
   completed: [],
+  partial: [],
   failed: [],
   timed_out: [],
   cancelled: []

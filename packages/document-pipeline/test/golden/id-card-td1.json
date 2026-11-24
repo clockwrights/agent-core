@@ -1,0 +1,25 @@
+{
+  "description": "TD1 (30-char) MRZ: classified as national-id; field parsing covers TD3 only, so it is flagged.",
+  "input": {
+    "type": "text",
+    "fileName": "id-card.txt",
+    "text": "IDENTITY CARD\nSPECIMEN - NOT A REAL DOCUMENT\n\nI<UTOX000000027<<<<<<<<<<<<<<<\n7001011F2912314UTO<<<<<<<<<<<<\nSAMPLE<<TEST<CARD<<<<<<<<<<<<<\n"
+  },
+  "expected": {
+    "groups": [
+      {
+        "units": [
+          1
+        ],
+        "method": "single-group",
+        "confidence": 1,
+        "label": "national-id",
+        "tier": "tier-a",
+        "fields": {},
+        "flags": [
+          "mrz-no-fields-parsed"
+        ]
+      }
+    ]
+  }
+}

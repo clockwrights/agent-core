@@ -1,0 +1,30 @@
+{
+  "description": "One text file holding a TD3 passport MRZ: single group, Tier-A passport with all MRZ fields.",
+  "input": {
+    "type": "text",
+    "fileName": "passport.txt",
+    "text": "PASSPORT\nSPECIMEN - NOT A REAL DOCUMENT\n\nP<UTOSAMPLE<<TEST<PERSON<<<<<<<<<<<<<<<<<<<<\nX000000010UTO7001011F2912314<<<<<<<<<<<<<<02\n"
+  },
+  "expected": {
+    "groups": [
+      {
+        "units": [
+          1
+        ],
+        "method": "single-group",
+        "confidence": 1,
+        "label": "passport",
+        "tier": "tier-a",
+        "fields": {
+          "surname": "SAMPLE",
+          "given_names": "TEST PERSON",
+          "document_number": "X00000001",
+          "nationality": "UTO",
+          "date_of_birth": "1970-01-01",
+          "expiry_date": "2029-12-31"
+        },
+        "flags": []
+      }
+    ]
+  }
+}

@@ -36,5 +36,6 @@ export {
   createMcpToolDefinitions
 } from "./mcpToolAdapter.js";
 export type {
+  McpToolDefinitionOptions,
   McpToolDetails
 } from "./mcpToolAdapter.js";

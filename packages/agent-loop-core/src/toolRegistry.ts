@@ -1,11 +1,60 @@
 import type { AgentTool } from "@maya-ai/tool-agent-runtime";
+import { limitToolResult, type ToolOutputStore } from "./toolResultLimits.js";
 
 export type ToolSource = "domain" | "mcp" | "memory" | "system";
 export type ToolRisk = "read" | "write" | "external";
 
+/**
+ * Behaviour hints a tool declares about itself (the MCP tool annotations).
+ * Only explicit values are recorded. They are claims, not guarantees: see
+ * `createToolApprovalPolicy` for how they are used.
+ */
+export interface ToolAnnotations {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
 export interface ToolMetadata {
   source: ToolSource;
   risk: ToolRisk;
+  /**
+   * Cap on result text passed to the model, in characters. Applied by
+   * `resolve()` / `resolveTools()` only when result limits are requested via
+   * `ResolveToolsOptions.resultLimits`.
+   */
+  maxResultChars?: number;
+  /**
+   * Keep the tool out of the prompt until the model finds it with
+   * `tool_search` (see `createToolSearch`). Ignored unless tool search is used.
+   */
+  deferred?: boolean;
+  /** MCP server the tool comes from (set by `createMcpToolDefinitions`). */
+  mcpServer?: string;
+  /** Hints the tool declares about itself (MCP annotations). They do not change `risk`. */
+  annotations?: ToolAnnotations;
+}
+
+export interface ResolveToolsOptions {
+  /**
+   * Cap tool result size. Each tool's `metadata.maxResultChars` wins over
+   * `defaultMaxChars`; tools with neither are returned unwrapped. With
+   * `store`, truncated output stays readable through the `read_tool_output`
+   * tool (see `createReadToolOutputTool`).
+   */
+  resultLimits?: {
+    defaultMaxChars?: number;
+    store?: ToolOutputStore;
+  };
+  /**
+   * Set each tool's `executionMode` from its registered risk: `read` →
+   * `"parallel"`, `write` / `external` → `"sequential"`, overriding the
+   * tool's own setting. Pair with the runtime's
+   * `toolBatchStrategy: "sequential-barriers"` so read tools run
+   * concurrently while each write or external tool runs alone. Default false.
+   */
+  executionModeFromRisk?: boolean;
 }
 
 export interface RegisteredTool {
@@ -49,8 +98,10 @@ export class ToolRegistry {
     this.entries.push(...definitions);
   }
 
-  resolve(policy: ToolPolicy = defaultToolPolicy): AgentTool<any>[] {
-    return this.entries.filter((entry) => isToolAllowed(entry, policy)).map((entry) => entry.tool);
+  resolve(policy: ToolPolicy = defaultToolPolicy, options: ResolveToolsOptions = {}): AgentTool<any>[] {
+    return this.entries
+      .filter((entry) => isToolAllowed(entry, policy))
+      .map((entry) => prepareResolvedTool(entry, options));
   }
 
   list(policy: ToolPolicy = defaultToolPolicy): RegisteredTool[] {
@@ -58,10 +109,31 @@ export class ToolRegistry {
   }
 }
 
-export function resolveTools(definitions: RegisteredTool[], policy: ToolPolicy = defaultToolPolicy): AgentTool<any>[] {
+export function resolveTools(
+  definitions: RegisteredTool[],
+  policy: ToolPolicy = defaultToolPolicy,
+  options: ResolveToolsOptions = {}
+): AgentTool<any>[] {
   const registry = new ToolRegistry();
   registry.registerDefinitions(definitions);
-  return registry.resolve(policy);
+  return registry.resolve(policy, options);
+}
+
+/** Execution mode implied by a tool's risk. */
+export function executionModeForRisk(risk: ToolRisk): "parallel" | "sequential" {
+  return risk === "read" ? "parallel" : "sequential";
+}
+
+function prepareResolvedTool(entry: RegisteredTool, options: ResolveToolsOptions): AgentTool<any> {
+  let tool = entry.tool;
+  if (options.executionModeFromRisk) {
+    const executionMode = executionModeForRisk(entry.metadata.risk);
+    if (tool.executionMode !== executionMode) tool = { ...tool, executionMode };
+  }
+  const limits = options.resultLimits;
+  const maxChars = limits ? (entry.metadata.maxResultChars ?? limits.defaultMaxChars) : undefined;
+  if (limits && maxChars !== undefined) tool = limitToolResult(tool, { maxChars, store: limits.store });
+  return tool;
 }
 
 export function isToolAllowed(entry: RegisteredTool, policy: ToolPolicy = defaultToolPolicy): boolean {

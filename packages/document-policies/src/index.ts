@@ -20,3 +20,22 @@ export type {
   LoadConfiguredPoliciesOptions,
 } from "./loader.js";
 export { loadPolicies, loadConfiguredPolicies } from "./loader.js";
+
+export type { PolicySeverity, PolicyFrontMatter, ParsedPolicyFile } from "./frontMatter.js";
+export { parsePolicyFile, PolicyFrontMatterError, POLICY_SEVERITIES } from "./frontMatter.js";
+
+export type {
+  PolicyRule,
+  PolicyEvidence,
+  PolicyVerdict,
+  PolicyVerdictOutcome,
+  PolicyVerdictCheck,
+  CheckPolicyVerdictsOptions,
+} from "./rules.js";
+export {
+  extractPolicyRules,
+  checkPolicyVerdicts,
+  buildRuleCitationInstructions,
+  PolicyRuleError,
+  POLICY_VERDICT_OUTCOMES,
+} from "./rules.js";

@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "App-agnostic pipeline that ingests files (PDF, images, Office docs, ZIP archives, plain text) and produces a normalised analysis package: per-file records, per-unit text and rendered images, document segmentation, three-tier classification with field extraction, and an optional continuation handler.",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -23,11 +26,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.test.json",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "adm-zip": "^0.5.17",
-    "file-type": "^19.6.0"
+    "adm-zip": "^0.6.1",
+    "file-type": "^22.3.0"
   },
   "peerDependencies": {
     "@napi-rs/canvas": "*",
@@ -35,13 +39,19 @@
     "xlsx": "^0.18.5"
   },
   "peerDependenciesMeta": {
-    "@napi-rs/canvas": { "optional": true },
-    "pdfjs-dist": { "optional": true },
-    "xlsx": { "optional": true }
+    "@napi-rs/canvas": {
+      "optional": true
+    },
+    "pdfjs-dist": {
+      "optional": true
+    },
+    "xlsx": {
+      "optional": true
+    }
   },
   "devDependencies": {
-    "@types/adm-zip": "^0.5.8",
     "@types/node": "^22.19.17",
+    "pdfjs-dist": "^4.10.38",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   },

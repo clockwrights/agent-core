@@ -1,0 +1,46 @@
+{
+  "description": "ZIP: two pages, a blank separator page, one page. The blank page splits documents and is dropped.",
+  "input": {
+    "type": "zip",
+    "fileName": "bundle.zip",
+    "files": [
+      {
+        "name": "1-a-page1.txt",
+        "text": "Document A, page 1\n\nParagraph 1 of synthetic sample text used only for tests.\nParagraph 2 of synthetic sample text used only for tests."
+      },
+      {
+        "name": "2-a-page2.txt",
+        "text": "Document A, page 2\n\nParagraph 1 of synthetic sample text used only for tests.\nParagraph 2 of synthetic sample text used only for tests."
+      },
+      {
+        "name": "3-blank.txt",
+        "text": "   \n"
+      },
+      {
+        "name": "4-b-page1.txt",
+        "text": "Document B, page 1\n\nParagraph 1 of synthetic sample text used only for tests.\nParagraph 2 of synthetic sample text used only for tests."
+      }
+    ]
+  },
+  "expected": {
+    "groups": [
+      {
+        "units": [
+          1,
+          2
+        ],
+        "method": "structural",
+        "confidence": 0.8,
+        "label": "unknown"
+      },
+      {
+        "units": [
+          4
+        ],
+        "method": "structural",
+        "confidence": 0.8,
+        "label": "unknown"
+      }
+    ]
+  }
+}

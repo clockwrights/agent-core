@@ -33,6 +33,7 @@ export type {
   ChildRunResultEnvelope,
   ChildRunStatus,
   ChildRunToolCallSummary,
+  ChildThinkingLevel,
   OrchestratorDecision,
   OrchestratorSynthesisInput,
   ParentContextSlice
@@ -76,6 +77,8 @@ export {
 
 export {
   buildChildSystemPrompt,
+  buildDelegationBrief,
+  buildDelegationGuidance,
   buildSynthesisPrompt,
   buildSynthesisSystemPrompt
 } from "./orchestrationPrompt.js";
@@ -175,6 +178,7 @@ export type {
 
 export {
   DEFAULT_ORCHESTRATION_POLICY,
+  resolveChildModel,
   TOOL_POLICY_PRESETS,
   checkActiveCount,
   checkDepth,

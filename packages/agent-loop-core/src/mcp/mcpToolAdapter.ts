@@ -11,15 +11,31 @@ export interface McpToolDetails {
   structuredContent?: unknown;
 }
 
-export async function createMcpToolDefinitions(runtime: McpRuntime): Promise<RegisteredTool[]> {
+export interface McpToolDefinitionOptions {
+  /**
+   * Mark tools as deferred (loaded on demand through `tool_search`): `true`
+   * for every server, or a list of server names. Default: none.
+   */
+  defer?: boolean | string[];
+}
+
+export async function createMcpToolDefinitions(
+  runtime: McpRuntime,
+  options: McpToolDefinitionOptions = {}
+): Promise<RegisteredTool[]> {
   const catalog = await runtime.getCatalog();
   const usedNames = new Set<string>();
+  const isDeferred = (server: string) =>
+    options.defer === true || (Array.isArray(options.defer) && options.defer.includes(server));
 
   return catalog.tools.map((entry) => ({
     tool: createMcpAgentTool(runtime, entry, usedNames),
     metadata: {
       source: "mcp",
-      risk: "external"
+      risk: "external",
+      mcpServer: entry.serverName,
+      ...(entry.annotations ? { annotations: { ...entry.annotations } } : {}),
+      ...(isDeferred(entry.serverName) ? { deferred: true } : {})
     }
   }));
 }

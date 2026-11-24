@@ -65,7 +65,7 @@ export const delegateTasksTaskParameters = Type.Object({
     )
   ),
   maxTokens: Type.Optional(
-    Type.Number({ description: "Token budget override for this delegated run." })
+    Type.Number({ description: "Maximum output tokens per model call for the delegated run (capped by policy)." })
   ),
   timeoutMs: Type.Optional(
     Type.Number({ description: "Timeout in milliseconds for this delegated run." })
@@ -150,6 +150,8 @@ export interface DelegateTasksResultPayloadEntry {
 export interface DelegateTasksResultPayload {
   total: number;
   completed: number;
+  /** Children stopped early by a run limit (status `partial`). */
+  partial: number;
   failed: number;
   results: DelegateTasksResultPayloadEntry[];
 }
@@ -384,15 +386,18 @@ function toToolResult(
   const effective = results.length > 0 ? results : fallback;
 
   let completed = 0;
+  let partial = 0;
   let failed = 0;
   for (const r of effective) {
     if (r.status === "completed") completed++;
+    else if (r.status === "partial") partial++;
     else failed++;
   }
 
   const payload: DelegateTasksResultPayload = {
     total: effective.length,
     completed,
+    partial,
     failed,
     results: effective.map((r, i) => ({
       index: i,

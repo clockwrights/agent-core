@@ -35,6 +35,7 @@ import {
   type OrchestrationPolicy
 } from "./orchestrationPolicy.js";
 import {
+  buildDelegationGuidance,
   buildSynthesisPrompt,
   buildSynthesisSystemPrompt
 } from "./orchestrationPrompt.js";
@@ -138,6 +139,8 @@ export interface OrchestratorState {
 export interface ChildLifecycleCounts {
   total: number;
   completed: number;
+  /** Children stopped early by a run limit. */
+  partial: number;
   failed: number;
   timedOut: number;
   cancelled: number;
@@ -149,6 +152,7 @@ export function computeChildLifecycleCounts(
   const counts: ChildLifecycleCounts = {
     total: results.length,
     completed: 0,
+    partial: 0,
     failed: 0,
     timedOut: 0,
     cancelled: 0
@@ -157,6 +161,9 @@ export function computeChildLifecycleCounts(
     switch (r.status) {
       case "completed":
         counts.completed++;
+        break;
+      case "partial":
+        counts.partial++;
         break;
       case "failed":
         counts.failed++;
@@ -199,6 +206,11 @@ export interface RunOrchestratorInput {
   parentObjective: string;
   /** Parent system prompt for the planning loop. */
   parentSystemPrompt: string;
+  /**
+   * Append `buildDelegationGuidance(policy)` (effort scaling + brief template)
+   * to the parent system prompt. Default false: the prompt is used as given.
+   */
+  appendDelegationGuidance?: boolean;
   /** Parent user prompt for the planning loop. */
   parentPrompt: string;
   /**
@@ -300,7 +312,9 @@ export async function runOrchestrator(
   try {
     parentOutput = await runToolAgentLoop({
       llm: input.llm,
-      systemPrompt: input.parentSystemPrompt,
+      systemPrompt: input.appendDelegationGuidance
+        ? `${input.parentSystemPrompt}\n\n${buildDelegationGuidance(policy)}`
+        : input.parentSystemPrompt,
       prompt: input.parentPrompt,
       sessionId: input.parentRunId,
       tools: input.parentTools,
@@ -491,10 +505,13 @@ export async function runSynthesis(
  */
 function synthesisFallbackText(state: OrchestratorState, errorMessage: string): string {
   const successCount = state.childResults.filter((r) => r.status === "completed").length;
-  const failureCount = state.childResults.length - successCount;
+  const partialCount = state.childResults.filter((r) => r.status === "partial").length;
+  const failureCount = state.childResults.length - successCount - partialCount;
   const lines = [
     `Synthesis failed (${errorMessage}).`,
-    `Child runs: ${state.childResults.length} (${successCount} completed, ${failureCount} failed).`
+    `Child runs: ${state.childResults.length} (${successCount} completed, ` +
+      (partialCount > 0 ? `${partialCount} partial, ` : "") +
+      `${failureCount} failed).`
   ];
   for (const result of state.childResults) {
     lines.push(`- [${result.status}] ${result.label}: ${result.summary}`);

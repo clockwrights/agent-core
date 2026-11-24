@@ -34,6 +34,7 @@ import {
 import {
   DEFAULT_ORCHESTRATION_POLICY,
   checkDepth,
+  resolveChildModel,
   type OrchestrationPolicy,
   type PresetOverrides
 } from "./orchestrationPolicy.js";
@@ -186,6 +187,8 @@ export async function executeChildRun(
   // ------------------------------------------------------------
   try {
     const timeoutMs = input.request.timeoutMs ?? policy.defaultChildTimeoutMs;
+    const maxTurns = input.request.maxTurns ?? policy.defaultChildMaxTurns;
+    const resolvedModel = resolveChildModel(input.request, policy);
     const output = await withChildTimeout(
       timeoutMs,
       runToolAgentLoop({
@@ -196,26 +199,40 @@ export async function executeChildRun(
         tools: buildTools(runtime),
         maxTokens: input.request.maxTokens ?? input.request.profile?.maxTokens,
         onProgress: progress.loopSink(),
-        signal: input.signal
+        signal: input.signal,
+        ...(maxTurns !== undefined ? { maxTurns } : {}),
+        ...(resolvedModel.model !== undefined ? { model: resolvedModel.model } : {}),
+        ...(resolvedModel.thinkingLevel !== undefined ? { reasoning: resolvedModel.thinkingLevel } : {})
       }),
       input.signal
     );
 
     const endedAt = clock();
-    const envelope = toChildRunResultEnvelope({
-      request: input.request,
-      output,
-      startedAt,
-      endedAt
-    });
+    const envelope = {
+      ...toChildRunResultEnvelope({
+        request: input.request,
+        output,
+        startedAt,
+        endedAt
+      }),
+      ...resolvedModel
+    };
     input.registry.markTerminal(envelope);
+    if (envelope.status === "failed" || envelope.status === "cancelled") {
+      progress.failed(envelope.status === "cancelled" ? "cancelled" : (envelope.failure?.message ?? "failed"));
+      return envelope;
+    }
+    if (envelope.status === "partial") {
+      progress.message(`stopped early (${envelope.endReason})`);
+    }
     // Stage 13 structured completion metrics. Sourced from the envelope so
     // the emitted line and the returned envelope can never disagree.
     progress.completed({
       durationMs: envelope.durationMs,
       toolCallCount: envelope.toolCalls.length,
       toolErrorCount: envelope.toolCalls.filter((tc) => tc.isError).length,
-      outputChars: envelope.text?.length ?? 0
+      outputChars: envelope.text?.length ?? 0,
+      ...(envelope.usage ? { totalTokens: envelope.usage.totalTokens, costUsd: envelope.usage.cost.total } : {})
     });
     return envelope;
   } catch (error) {
@@ -294,6 +311,9 @@ function validateRequest(
         `maxTokens exceeds policy.maxChildTokens (${policy.maxChildTokens})`
       );
     }
+  }
+  if (request.maxTurns !== undefined && (!Number.isInteger(request.maxTurns) || request.maxTurns < 1)) {
+    return validationFailure("maxTurns must be a positive integer");
   }
   if (
     request.contextMode !== "isolated" &&

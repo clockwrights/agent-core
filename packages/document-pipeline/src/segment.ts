@@ -26,6 +26,16 @@ import type {
 } from "./types.js";
 import type { PipelineLlmAdapter } from "./llm.js";
 
+/**
+ * Confidence reported when a multi-unit submission is returned as one group
+ * only because no boundary could be determined (no structural signal, and
+ * the LLM fallback was disabled, unavailable or failed). It is an
+ * "undecided" value, below typical review thresholds, so callers can route
+ * such submissions to review. A single-unit submission is certain and
+ * reports 1.0.
+ */
+export const UNSEGMENTED_FALLBACK_CONFIDENCE = 0.5;
+
 // ---------------------------------------------------------------------------
 // Public request type and entry point
 // ---------------------------------------------------------------------------
@@ -56,7 +66,7 @@ export async function segmentDocuments(
 
   // Single-unit fast path — no segmentation needed.
   if (units.length <= 1) {
-    return singleGroupMap(units);
+    return singleGroupMap(units, 1.0);
   }
 
   // Structural (deterministic) detection — always attempted.
@@ -71,8 +81,9 @@ export async function segmentDocuments(
     if (llmResult !== null) return llmResult;
   }
 
-  // Final fallback: treat the entire submission as one document.
-  return singleGroupMap(units);
+  // Final fallback: treat the entire submission as one document. Nothing
+  // confirmed that, so report it as undecided rather than certain.
+  return singleGroupMap(units, UNSEGMENTED_FALLBACK_CONFIDENCE);
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +94,12 @@ export async function segmentDocuments(
  * A Machine-Readable Zone line contains ≥ 20 consecutive uppercase letters,
  * digits, and '<' fill characters. Handles TD1 (30 chars), TD2 (36 chars),
  * and TD3 / passport (44 chars) formats.
+ *
+ * Deliberately looser than Tier A classification (`classify.ts`, ≥ 30, the
+ * shortest real MRZ line): here an MRZ-like line is only a boundary hint, and
+ * OCR often truncates MRZ lines. So a 20–29 char line can start a new group
+ * without Tier A then classifying it as an identity document. Pinned by a
+ * test in segment.test.ts; change both together if you align them.
  */
 const MRZ_LINE_RE = /^[A-Z][A-Z0-9<]{19,}$/m;
 
@@ -125,7 +142,10 @@ function detectStructuralBoundaries(
   if (!hasAnySignal) return null;
 
   // Walk units and decide where boundaries fall:
-  //   - A blank/separator unit marks a boundary; it is NOT included in any group.
+  //   - A blank unit marks a boundary; it is NOT included in any group.
+  //   - A unit with a separator (form-feed or separator line) stays in the
+  //     group it closes; the boundary falls after it (pinned by the
+  //     `separator-line` golden case).
   //   - When an MRZ unit follows a non-MRZ unit, a new document starts.
   const groups: DocumentGroup[] = [];
   let currentIndices: number[] = [];
@@ -136,8 +156,8 @@ function detectStructuralBoundaries(
 
     const boundaryBefore =
       i > 0 &&
-      (prev!.isEmpty ||               // preceding blank page / separator sheet
-        prev!.hasSeparator ||         // preceding form-feed or separator line
+      (prev!.isEmpty ||               // preceding blank page
+        prev!.hasSeparator ||         // preceding unit ended with a form-feed or separator line
         (sig.hasMrz && !prev!.hasMrz)); // start of a new MRZ document
 
     if (boundaryBefore && currentIndices.length > 0) {
@@ -145,7 +165,8 @@ function detectStructuralBoundaries(
       currentIndices = [];
     }
 
-    // Blank and separator units are discarded — they are interstitial markers.
+    // Only blank units are discarded — they are interstitial markers. A
+    // separator unit may carry content, so it is kept in its group.
     if (!sig.isEmpty) {
       currentIndices.push(sig.unitIndex);
     }
@@ -360,13 +381,13 @@ function buildGroup(
   };
 }
 
-function singleGroupMap(units: DocumentUnit[]): SegmentationMap {
+function singleGroupMap(units: DocumentUnit[], confidence: number): SegmentationMap {
   return {
     groups: [
       {
         id: "group-1",
         unitIndices: units.map((u) => u.index),
-        confidence: 1.0,
+        confidence,
         segmentationMethod: "single-group",
       },
     ],

@@ -15,6 +15,8 @@ export interface AgentRuntimeMcpCapabilitiesConfig {
   toolDeny?: string[];
   clientName?: string;
   clientVersion?: string;
+  /** Mark MCP tools as deferred for `createToolSearch`: `true` for all servers or a list of server names. */
+  deferTools?: boolean | string[];
 }
 
 export type AgentRuntimeToolPolicyConfig = Partial<Pick<ToolPolicy, "enabled" | "sources" | "allow" | "deny">>;
@@ -43,7 +45,7 @@ export async function createAgentRuntimeContextFromConfig(config: AgentRuntimeCa
   if (mcpEnabled && mcpRuntime) {
     disposers.push(() => mcpRuntime.dispose());
     try {
-      mcpToolDefinitions = filterDefinitions(await createMcpToolDefinitions(mcpRuntime), {
+      mcpToolDefinitions = filterDefinitions(await createMcpToolDefinitions(mcpRuntime, { defer: config.mcp?.deferTools }), {
         allow: config.mcp?.toolAllow ?? [],
         deny: config.mcp?.toolDeny ?? []
       });
@@ -66,7 +68,10 @@ export async function createAgentRuntimeContextFromConfig(config: AgentRuntimeCa
 
   const skillsContext = await createSkillsRuntimeContext(config.skills ?? { enabled: false, roots: [] });
   diagnostics.push(...skillsContext.diagnostics.map((diagnostic) => ({ ...diagnostic, source: "skills" as const })));
-  const skillToolDefinitions = createSkillToolDefinitions(skillsContext.skills);
+  const skillToolDefinitions = createSkillToolDefinitions(skillsContext.skills, {
+    fileAccess: config.skills?.fileAccess,
+    maxResourceBytes: config.skills?.maxResourceBytes
+  });
 
   return {
     toolDefinitions: [...mcpToolDefinitions, ...memoryContext.toolDefinitions, ...skillToolDefinitions],

@@ -6,14 +6,23 @@
  * through these contracts.
  */
 
+import type { AgentEndReason, AgentUsage, ToolInterruption } from "@maya-ai/tool-agent-runtime";
+
 // ---------------------------------------------------------------------------
 // Lifecycle status
 // ---------------------------------------------------------------------------
 
+/**
+ * - `partial`: the child stopped early because a run limit was reached
+ *   (`max_turns`, `max_tool_calls` or `budget`). Its text and tool calls are
+ *   kept; `warnings` says which limit. Only reported when the adapter
+ *   reports an end reason (see `ToolLlmAdapter` `supports.usage`).
+ */
 export type ChildRunStatus =
   | "pending"
   | "running"
   | "completed"
+  | "partial"
   | "failed"
   | "timed_out"
   | "cancelled";
@@ -31,13 +40,18 @@ export type ChildExecutionMode = "blocking_inline";
 // Execution profile
 // ---------------------------------------------------------------------------
 
+export type ChildThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
 /**
- * Cost / capability shape for a child run. Phase 1 inherits the parent
- * model and reasoning depth by default; explicit overrides land later.
+ * Cost / capability shape for a child run. `model` / `thinkingLevel` are
+ * the profile level of the child model resolution order:
+ * request > profile > policy default > parent (the adapter's default).
+ * `model` is a selector the adapter interprets (llm-profiles profile name,
+ * component id or provider model id).
  */
 export interface ChildExecutionProfile {
   model?: string;
-  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  thinkingLevel?: ChildThinkingLevel;
   maxTokens?: number;
   toolPolicyPreset?: string;
 }
@@ -58,6 +72,16 @@ export interface ChildRunRequest {
   profile?: ChildExecutionProfile;
   maxTokens?: number;
   timeoutMs?: number;
+  /**
+   * Maximum model calls for the child. Falls back to the policy's
+   * `defaultChildMaxTurns`; unset means no cap. Reaching it yields status
+   * `partial` (with an adapter that reports end reasons).
+   */
+  maxTurns?: number;
+  /** Model selector for this child; wins over `profile.model` and the policy default. */
+  model?: string;
+  /** Reasoning effort for this child; wins over `profile.thinkingLevel` and the policy default. */
+  thinkingLevel?: ChildThinkingLevel;
   allowWriteTools?: boolean;
   idempotencyKey?: string;
   metadata?: Record<string, string>;
@@ -148,6 +172,21 @@ export interface ChildRunResultEnvelope {
   startedAt: string;
   endedAt: string;
   durationMs: number;
+  /** Token usage and cost of the child run, when the adapter reports it. */
+  usage?: AgentUsage;
+  /** Why the child's run ended, when the adapter reports it. */
+  endReason?: AgentEndReason;
+  /** Model calls the child made, when the adapter reports it. */
+  turns?: number;
+  /**
+   * Tool calls the child is waiting to have approved (`endReason`
+   * "interrupted"). Approvals are not bubbled up to the parent run.
+   */
+  interruptions?: ToolInterruption[];
+  /** Model selector the child was run with (after resolution), if any. */
+  model?: string;
+  /** Reasoning effort the child was run with (after resolution), if any. */
+  thinkingLevel?: ChildThinkingLevel;
 }
 
 // ---------------------------------------------------------------------------

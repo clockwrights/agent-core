@@ -226,7 +226,11 @@ export type DocumentGroup = {
   id: string;
   /** 1-based unit indices belonging to this group, in order. */
   unitIndices: number[];
-  /** Segmentation confidence, 0–1. */
+  /**
+   * Segmentation confidence, 0–1. A "single-group" result is 1.0 for a
+   * single-unit submission and `UNSEGMENTED_FALLBACK_CONFIDENCE` (0.5) when a
+   * multi-unit submission could not be split.
+   */
   confidence: number;
   segmentationMethod: SegmentationMethod;
 };

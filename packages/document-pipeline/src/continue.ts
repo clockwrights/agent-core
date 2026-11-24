@@ -94,7 +94,7 @@ export function buildContinuationPrompt(
     }
   }
   if (pkg.policyRef) {
-    lines.push(`Policy: ${pkg.policyRef.name} v${pkg.policyRef.version}`);
+    lines.push(`Policy: ${pkg.policyRef.name}@${pkg.policyRef.version}#${pkg.policyRef.contentHash}`);
   }
   lines.push("");
 

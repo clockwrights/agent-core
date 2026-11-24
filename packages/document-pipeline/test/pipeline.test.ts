@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { pngBuffer } from "./png-fixture.js";
 import { runDocumentPipeline } from "../src/pipeline.js";
 import {
   DocumentPolicyRegistry,
@@ -18,9 +19,6 @@ function pdfBuffer(extraBytes = 200): Buffer {
   return Buffer.concat([header, Buffer.alloc(extraBytes)]);
 }
 
-function pngBuffer(): Buffer {
-  return Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...Array(50).fill(0)]);
-}
 
 function textBuffer(content = "Hello world"): Buffer {
   return Buffer.from(content, "utf8");
@@ -234,4 +232,28 @@ test("pipeline: single text unit is extracted into unitExtractions", async () =>
   if (ingestEntry?.status === "ok") {
     assert.equal(pkg.units.length, 1);
   }
+});
+
+test("pipeline: ingest failure keeps the requested policy's reference", async () => {
+  const registry = new DocumentPolicyRegistry();
+  registry.register("identity-documents", "Policy text for ID documents.");
+  const expected = registry.get("identity-documents")!;
+
+  const result = await runDocumentPipeline(
+    { buffer: Buffer.alloc(0), fileName: "empty.pdf", policyName: "identity-documents" },
+    { policyRegistry: registry },
+  );
+
+  const pkg = result.analysisPackage;
+  assert.equal(pkg.processingLog.find((e) => e.stage === "ingest")?.status, "failed");
+  assert.deepEqual(pkg.policyRef, {
+    name: "identity-documents",
+    version: expected.version,
+    contentHash: expected.contentHash,
+  });
+});
+
+test("pipeline: ingest failure without a policy → policyRef is null", async () => {
+  const result = await runDocumentPipeline({ buffer: Buffer.alloc(0), fileName: "empty.pdf" });
+  assert.equal(result.analysisPackage.policyRef, null);
 });

@@ -1,0 +1,35 @@
+{
+  "description": "ZIP: a page ending with a separator line, then another page. The separator splits; its page stays in the first group.",
+  "input": {
+    "type": "zip",
+    "fileName": "bundle.zip",
+    "files": [
+      {
+        "name": "1-invoice.txt",
+        "text": "Invoice\n\nParagraph 1 of synthetic sample text used only for tests.\nParagraph 2 of synthetic sample text used only for tests.\n-----\n"
+      },
+      {
+        "name": "2-receipt.txt",
+        "text": "Receipt\n\nParagraph 1 of synthetic sample text used only for tests.\nParagraph 2 of synthetic sample text used only for tests."
+      }
+    ]
+  },
+  "expected": {
+    "groups": [
+      {
+        "units": [
+          1
+        ],
+        "method": "structural",
+        "confidence": 0.8
+      },
+      {
+        "units": [
+          2
+        ],
+        "method": "structural",
+        "confidence": 0.8
+      }
+    ]
+  }
+}

@@ -1,3 +1,4 @@
+import { readSkillFileToolName } from "./skillFileTool.js";
 import { loadSkills } from "./skillLoader.js";
 import { formatSkillsForPrompt } from "./skillPrompt.js";
 import type { SkillConfig, SkillsRuntimeContext } from "./skillTypes.js";
@@ -5,7 +6,8 @@ import type { SkillConfig, SkillsRuntimeContext } from "./skillTypes.js";
 export async function createSkillsRuntimeContext(config: SkillConfig): Promise<SkillsRuntimeContext> {
   const result = await loadSkills(config);
   const skillsPrompt = formatSkillsForPrompt(result.skills, {
-    maxPromptChars: config.maxPromptChars
+    maxPromptChars: config.maxPromptChars,
+    ...(config.fileAccess ? { fileToolName: readSkillFileToolName } : {})
   });
   return {
     skillsPrompt,

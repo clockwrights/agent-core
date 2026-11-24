@@ -11,6 +11,7 @@ import type {
   MemorySourceFilter
 } from "../memoryTypes.js";
 import { memoryGetToolName, memorySearchToolName } from "../memoryTools.js";
+import { readMemoryProvenance } from "../provenance.js";
 
 export interface MarkdownWikiFile {
   path: string;
@@ -126,7 +127,9 @@ class MarkdownWikiMemoryRuntime implements MemoryRuntime {
     const selected = lines.slice(startIndex, startIndex + requestedLineCount);
     const limited = limitChars(selected.join("\n"), this.config.maxGetChars ?? defaultMaxGetChars);
     const actualLineCount = selected.length;
+    const origin = readMemoryProvenance(content)?.origin;
     return {
+      ...(origin ? { origin } : {}),
       path: targetPath,
       title: titleFromContent(content) ?? titleFromPath(targetPath),
       source: this.resolveSource(targetPath),
@@ -203,7 +206,9 @@ function scoreFile(
   }
   if (rawScore <= 0) return undefined;
   const { snippet, startLine, endLine } = buildSnippet(file.content, tokens, maxSnippetChars);
+  const origin = readMemoryProvenance(file.content)?.origin;
   return {
+    ...(origin ? { origin } : {}),
     path: file.path,
     title: file.title,
     source: file.source,
