@@ -88,6 +88,26 @@ function loadConfiguredPolicies(opts?): LoadedPolicy[];
 
 `DocumentPoliciesConfigError` is thrown for fatal configuration problems. It carries a `source` field (the manifest or body path) so audit logs can pinpoint which file is at fault.
 
+The loader wraps the lower-level errors below in `DocumentPoliciesConfigError`; you only see them when you call the helpers directly:
+
+- `PolicyFrontMatterError` — thrown by `parsePolicyFile` for a broken front-matter block.
+- `PolicyRuleError` — thrown by `extractPolicyRules` for duplicate rule ids.
+
+### Lower-level helpers
+
+```ts
+// Split a policy file into front-matter and body (no file access, no schema loading).
+function parsePolicyFile(raw: string): { frontMatter?: PolicyFrontMatter; body: string };
+
+// Anchored `{#rule-id}` rules of a policy body; `severity` is copied onto each rule.
+function extractPolicyRules(body: string, severity?: PolicySeverity): PolicyRule[];
+
+const POLICY_SEVERITIES;       // ["info", "warning", "error"]
+const POLICY_VERDICT_OUTCOMES; // ["pass", "fail", "not_applicable", "uncertain"]
+```
+
+`buildRuleCitationInstructions` and `checkPolicyVerdicts` are described under [Rule anchors and verdicts](#rule-anchors-and-verdicts).
+
 ---
 
 ## Configuration sources

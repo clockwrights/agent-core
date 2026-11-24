@@ -214,6 +214,7 @@ await runToolAgent({
 - **`stopWhen`** conditions receive `{ steps, totalUsage }`, where each `AgentStep` is `{ turn, message, toolResults, usage }`. They run after a turn's tool batch, only when the run would otherwise continue: `terminated` and `max_tool_calls` take precedence; `max_turns` and `budget` are checked after them. Conditions may be async.
 - **`prepareStep`** runs before every model call, including the first. Overrides apply to that step only and are not persisted: `messages` replaces what the model sees (for pruning or clearing old tool results) without changing the run's transcript; `activeTools` narrows both the tools offered and the tools that can execute in that step (a call outside the set gets a "not found" error result; unknown names are ignored). Tool choice is not exposed: pi-ai's generic stream options have no provider-neutral tool-choice field.
 - `composePrepareSteps(a, b, …)` combines hooks: they run in order and each sees the previous hook's `messages`; for `model`, `systemPrompt` and `reasoning` the last hook that sets one wins, and `activeTools` lists are intersected.
+- `selectActiveTools(tools, activeTools)` is the filter the loop uses for `activeTools` (all tools when `activeTools` is undefined); it is exported for hooks and adapters that need the same rule.
 - A hook that throws ends the run with reason `error` and `errorMessage` `"prepareStep failed: …"` / `"stopWhen failed: …"`. When `prepareStep` fails no model call happened, so `agent_end` follows the open `turn_start` directly.
 
 ## Tool approval hooks
@@ -256,7 +257,7 @@ const saved = parseRunState(await db.load(runId));
 const next = await runAgent({ systemPrompt, model, tools, resumeFrom: saved, prompt: "Now book it", maxTurns: 20 });
 ```
 
-- **`RunState`** is `{ version: 1, messages, turns, toolCallsExecuted, usage, endReason?, errorMessage?, metadata? }`: progress only. Model, tools, API keys, system prompt, hooks and limits are not in it — pass them on every call. `metadata` is yours; the runtime copies it through.
+- **`RunState`** is `{ version: 1, messages, turns, toolCallsExecuted, usage, endReason?, errorMessage?, metadata?, interruptions? }` (`RUN_STATE_VERSION` is the current version; `interruptions` is set when the run ended `interrupted`, see [Tool approval hooks](#tool-approval-hooks)): progress only. Model, tools, API keys, system prompt, hooks and limits are not in it — pass them on every call. `metadata` is yours; the runtime copies it through.
 - **`serializeRunState(state)`** returns JSON text and throws `RunStateError` if anything would be lost in JSON (functions, `Date`/`Map` and other class instances, `NaN`, `undefined` inside arrays, cycles), naming the path and the tool. Tools whose results should survive a resume must return JSON-safe `details`.
 - **`parseRunState(jsonOrValue)`** validates and copies; a state from a newer runtime (`version` > 1) is rejected with a clear error.
 - **Starting transcript:** `prompt` alone works as before. `messages` continues a conversation with counters at zero; add `prompt` to append a new user turn. `resumeFrom` continues a saved run with counters and usage carried over. `messages` + `resumeFrom` together, or none of `prompt`/`messages`/`resumeFrom`, is a `RangeError`.
