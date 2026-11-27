@@ -76,6 +76,11 @@ export type DocumentPipelineRequest = {
    * (prompts and output unchanged).
    */
   fieldCitations?: boolean;
+  /**
+   * Turn on review routing with these thresholds (`{}` uses the defaults).
+   * Absent: no `review` in the output.
+   */
+  review?: ReviewThresholds;
   /** Hard caps on resource usage. Falls back to pipeline-level defaults when absent. */
   limits?: Partial<DocumentPipelineLimits>;
 };
@@ -296,6 +301,50 @@ export type ExtractedField = {
   citations?: FieldCitation[];
 };
 
+/** Thresholds for review routing; every field is optional. */
+export type ReviewThresholds = {
+  /** Segment confidence below this routes to review. Default 0.6 (the 0.5 unsegmented fallback is under it). */
+  segmentationConfidence?: number;
+  /** Classification confidence below this routes to review. Default 0.6. */
+  classificationConfidence?: number;
+  /** Field confidence below this routes to review. Default 0.5. */
+  fieldConfidence?: number;
+  /** Fields not checked for confidence or citations (e.g. optional fields). */
+  ignoreFields?: string[];
+  /** Also route fields whose citations are only "unverifiable". Default false. */
+  requireVerifiedCitations?: boolean;
+  /** `uncertaintyFlags` that route to review (exact names). Default none. */
+  reviewFlags?: string[];
+};
+
+export type ReviewReasonCode =
+  | "low-segmentation-confidence"
+  | "low-classification-confidence"
+  /** Label "unknown" or no classifier result. */
+  | "unknown-type"
+  /** The policy does not cover the type. */
+  | "unsupported-type"
+  | "low-field-confidence"
+  /** The field's quote is not in the document text. */
+  | "citation-not-found"
+  /** Only with `requireVerifiedCitations`: the quote could not be checked. */
+  | "citation-unverifiable"
+  /** An `uncertaintyFlags` entry listed in `reviewFlags` (the flag is in `detail`). */
+  | "flagged";
+
+export type ReviewReason = {
+  code: ReviewReasonCode;
+  groupId: string;
+  fieldName?: string;
+  detail?: string;
+};
+
+export type ReviewDecision = {
+  /** True when there is at least one reason. */
+  required: boolean;
+  reasons: ReviewReason[];
+};
+
 export type ClassifiedDocumentGroup = {
   groupId: string;
   /** Document type label as determined by the classifier, e.g. "national-id", "passport". */
@@ -307,6 +356,8 @@ export type ClassifiedDocumentGroup = {
   fields: ExtractedField[];
   /** Flags raised during extraction, e.g. "mrz-visual-mismatch", "low-confidence-name". */
   uncertaintyFlags: string[];
+  /** Whether a person should check this group, and why. Present only with `review` on the request. */
+  review?: ReviewDecision;
 };
 
 // ---------------------------------------------------------------------------
@@ -365,6 +416,11 @@ export type AnalysisPackage = {
   /** Policy name and version that governed this analysis. Null when open-vocabulary mode was used. */
   policyRef: { name: string; version: string; contentHash: string } | null;
   processingLog: ProcessingLogEntry[];
+  /**
+   * All groups' review reasons, in group order. Present only with `review` on
+   * the request (and when the pipeline reached assembly).
+   */
+  review?: ReviewDecision;
 };
 
 // ---------------------------------------------------------------------------

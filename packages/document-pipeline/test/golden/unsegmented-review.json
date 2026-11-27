@@ -1,0 +1,30 @@
+{
+  "description": "ZIP of two prose pages, no boundary signal and no LLM, with review on: the undecided group goes to review.",
+  "input": {
+    "type": "zip",
+    "fileName": "bundle.zip",
+    "files": [
+      {
+        "name": "1-report.txt",
+        "text": "Report, page 1\n\nParagraph 1 of synthetic sample text used only for tests.\nParagraph 2 of synthetic sample text used only for tests."
+      },
+      {
+        "name": "2-report.txt",
+        "text": "Report, page 2\n\nParagraph 1 of synthetic sample text used only for tests.\nParagraph 2 of synthetic sample text used only for tests."
+      }
+    ]
+  },
+  "request": {
+    "review": {}
+  },
+  "expected": {
+    "groups": [
+      {
+        "units": [1, 2],
+        "confidence": 0.5,
+        "review": ["low-segmentation-confidence", "unknown-type", "low-classification-confidence"]
+      }
+    ],
+    "reviewRequired": true
+  }
+}

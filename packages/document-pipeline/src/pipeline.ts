@@ -382,6 +382,7 @@ export async function runDocumentPipeline(
     classifiedGroups,
     policy,
     processingLog: log,
+    ...(request.review ? { review: request.review } : {}),
   });
 
   // -------------------------------------------------------------------------

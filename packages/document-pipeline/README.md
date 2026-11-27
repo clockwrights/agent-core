@@ -159,6 +159,7 @@ The "unknown" fallback group has `classificationTier: <minTier>` so the result r
 | `tierBThreshold` | `[0,1]` | Min Tier-B confidence to skip Tier C |
 | `minTier` | enum | `tier-a \| tier-b \| tier-c` — lowest tier the classifier may attempt |
 | `fieldCitations` | boolean | Opt-in, default off. Each field gets `citations` with a verified quote — see [Field citations](#field-citations-opt-in) |
+| `review` | `ReviewThresholds` | Opt-in. Groups and the package get a `review` decision — see [Review routing](#review-routing-opt-in) |
 | `policyName` | string | Named policy in the registry (open-vocabulary if absent) |
 | `taskIntent` | string | Continuation goal — gates whether the continuation handler runs |
 | `language` | BCP-47 | Hint, e.g. `en`, `ar-EG` |
@@ -179,6 +180,7 @@ The package exports `loadPipelineDefaults()` which reads these env vars once and
 | `LLM_DEFAULT_TIER_B_THRESHOLD` | `0.6` | Default applied when the request omits `tierBThreshold`. |
 | `LLM_DEFAULT_MIN_TIER` | `tier-a` | Default applied when the request omits `minTier`. |
 | `LLM_DEFAULT_FIELD_CITATIONS` | off | `true`/`1` or `false`/`0`: default for `fieldCitations`. Unset: `fieldCitations` is absent from the defaults. |
+| `LLM_DEFAULT_REVIEW` | off | `true`/`1`: defaults get `review: {}` (review routing with the default thresholds). |
 
 Invalid env values (unknown enum, non-numeric threshold, out-of-range threshold) produce a `console.warn` at boot and the field falls back to the built-in default. The pipeline never refuses to start because of a bad env var.
 
@@ -267,6 +269,31 @@ type FieldCitation = {
 - Fields with an empty value, or for which the model gave no quote, get `citations: []`. Without the option, prompts and output are unchanged (no `citations` key).
 - Helpers: `findQuoteSpan(text, quote)`, `boxForSpan(text, blocks, span)`, `citeQuote(field, quote, context)`, `attachFieldCitations(group, quotes, context)`, `MAX_CITATION_QUOTE_CHARS`. The prompt builders `buildClassificationPrompt(…, options?)` and `buildFieldExtractionPrompt(…, options?)` take `{ fieldCitations }` (`ClassificationPromptOptions`).
 
+## Review routing (opt-in)
+
+Pass `review` thresholds (`{}` for the defaults). The assemble stage then decides, for each group, whether a person should check it, and why:
+
+```ts
+const { analysisPackage } = await runDocumentPipeline({ …, fieldCitations: true, review: { fieldConfidence: 0.7 } }, deps);
+if (analysisPackage.review?.required) queueForReview(analysisPackage.review.reasons);
+```
+
+| Threshold (`ReviewThresholds`) | Default | Reason code when hit |
+|---|---|---|
+| `segmentationConfidence` | `0.6` (`DEFAULT_REVIEW_THRESHOLDS`) | `low-segmentation-confidence` (the `0.5` unsegmented fallback is under it) |
+| — | — | `unknown-type` (label `unknown` or no classifier result), `unsupported-type` (the policy does not cover the type) |
+| `classificationConfidence` | `0.6` | `low-classification-confidence` |
+| `fieldConfidence` | `0.5` | `low-field-confidence` (per field) |
+| — | — | `citation-not-found`: a field whose citations include `not-found` and none `verified`/`deterministic` (needs `fieldCitations`) |
+| `requireVerifiedCitations` | `false` | `citation-unverifiable`: a field whose citations are only `unverifiable` |
+| `reviewFlags` | none | `flagged`: an `uncertaintyFlags` entry in this list (the flag is in `detail`) |
+| `ignoreFields` | none | listed fields skip the field rules |
+
+- Each `ClassifiedDocumentGroup` gets `review: { required, reasons }`, with reasons in the order of the table above. `AnalysisPackage.review` holds all groups' reasons in group order. A reason is `{ code, groupId, fieldName?, detail? }`. `detail` gives the compared numbers, for example `"0.4 < 0.6"`.
+- The processing log gets `{ stage: "review", status: "ok", detail: "<n> of <m> groups need review" }`.
+- Without `review`, nothing is added. A package that stops before assembly (for example a failed ingest) has no `review`.
+- Helpers: `reviewGroup(group, segmentConfidence, thresholds)` and `reviewGroups(groups, segmentationMap, thresholds)` (pure; the groups are copied).
+
 ---
 
 ## Lower-level helpers
@@ -305,7 +332,7 @@ Types not shown elsewhere in this README, by area:
 - **Request and package:** `DocumentPipelineExecutionMode` (`"deterministic-first" | "hybrid" | "full-multimodal"`), `DocumentPipelineContext` (`{ language?, country?, submissionIntent? }`), `FileRecord` (one ingested file: name, SHA-256, size, MIME type, time), `ProcessingLogEntry` (`{ stage, status, detail?, durationMs? }`).
 - **Units and extraction:** `DocumentUnit` / `DocumentUnitKind` (`"page" | "image" | "sheet" | "section" | "text-block"`), `UnitExtractionResult`, `ExtractedImage`, `BoundingBox` with `CoordSpace` (`"pixels" | "normalized"`), `ExtractionLimits`, and the extractor plugin types `ExtractorPluginRequest` / `ExtractorPluginResult`.
 - **OCR:** `OCRResult` (`{ text, wordBoxes?, confidence?, detectedLanguage? }`), `OCRWordBox` and `OCROptions` (`{ language?, requestLayout? }`).
-- **Segmentation and classification:** `SegmentationRequest`, `SegmentationMap` (`{ groups }`), `SegmentationMethod` (`"structural" | "llm-assisted" | "single-group"`), `ClassificationRequest`, `ClassificationSourceDocument` (a source file passed for native PDF), `ClassificationTier` (`"tier-a" | "tier-b" | "tier-c"`), `ClassifiedDocumentGroup` and `ExtractedField` (`{ name, value, confidence, sourceUnitIndex, boundingBox?, method, citations? }`), `FieldCitation` / `FieldCitationStatus` (see [Field citations](#field-citations-opt-in)), `CitationContext` (`{ group, units, extractions }`).
+- **Segmentation and classification:** `SegmentationRequest`, `SegmentationMap` (`{ groups }`), `SegmentationMethod` (`"structural" | "llm-assisted" | "single-group"`), `ClassificationRequest`, `ClassificationSourceDocument` (a source file passed for native PDF), `ClassificationTier` (`"tier-a" | "tier-b" | "tier-c"`), `ClassifiedDocumentGroup` and `ExtractedField` (`{ name, value, confidence, sourceUnitIndex, boundingBox?, method, citations? }`), `FieldCitation` / `FieldCitationStatus` (see [Field citations](#field-citations-opt-in)), `CitationContext` (`{ group, units, extractions }`), and for review routing `ReviewThresholds`, `ReviewDecision` (`{ required, reasons }`), `ReviewReason` and `ReviewReasonCode` (see [Review routing](#review-routing-opt-in)).
 - **LLM adapter parts:** `PipelineImage` (`{ data, mimeType }`) and `PipelineDocument` (`{ data, mimeType, name? }`).
 - **Assembly and continuation:** `AssemblyInput`, `ContinuationRequest`, `ContinuationResult` (`{ results, evidence, unresolvedItems, suggestedNextSteps }`), `ContinuationEvidence`, `UnresolvedItem` and `LlmContinuationOptions` (`{ maxTokens?, sessionIdPrefix? }`).
 - **ZIP:** `ZipExpansionOptions` (`{ maxEntryBytes?, maxUnits?, parallelism? }`), `ZipExtractionParallelism` (`"sequential" | "parallel"`) and `ZipExpansionResult` (`{ fileRecords, entryBuffers, units, warnings }`).
