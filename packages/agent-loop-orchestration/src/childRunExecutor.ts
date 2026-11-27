@@ -29,8 +29,10 @@ import {
   toFailureEnvelope
 } from "./childRunResult.js";
 import {
+  buildChildBrief,
   buildChildSystemPrompt as defaultBuildChildSystemPrompt
 } from "./orchestrationPrompt.js";
+import { inheritAllowedToolNames, type InheritModeOptions } from "./inheritMode.js";
 import {
   DEFAULT_ORCHESTRATION_POLICY,
   checkDepth,
@@ -84,6 +86,11 @@ export interface ExecuteChildRunInput {
    * runtime aborts in-flight LLM streams and tool work too.
    */
   signal?: AbortSignal;
+  /**
+   * Options for `contextMode: "inherit"` (which parent tools the child may
+   * run). Without them an inherit child may run none of the parent's tools.
+   */
+  inherit?: InheritModeOptions;
 }
 
 /**
@@ -180,6 +187,19 @@ export async function executeChildRun(
   const buildSystemPrompt = input.buildSystemPrompt ?? defaultBuildChildSystemPrompt;
   const buildTools = input.buildTools ?? defaultBuildChildTools;
 
+  // "inherit" needs the parent's request and an adapter that honours
+  // `messages` and tool hooks; otherwise the child runs isolated.
+  const warnings: string[] = [];
+  let request = input.request;
+  if (request.contextMode === "inherit") {
+    const unavailable = inheritUnavailableReason(request, input.llm);
+    if (unavailable) {
+      warnings.push(`inherit unavailable: ${unavailable}; ran isolated`);
+      const { inherited: _dropped, ...rest } = request;
+      request = { ...rest, contextMode: "isolated" };
+    }
+  }
+
   // ------------------------------------------------------------
   // Run the loop with a per-child timeout. Any error path lands in
   // the catch below; success path normalises through
@@ -188,35 +208,71 @@ export async function executeChildRun(
   try {
     const timeoutMs = input.request.timeoutMs ?? policy.defaultChildTimeoutMs;
     const maxTurns = input.request.maxTurns ?? policy.defaultChildMaxTurns;
-    const resolvedModel = resolveChildModel(input.request, policy);
-    const output = await withChildTimeout(
-      timeoutMs,
-      runToolAgentLoop({
+    const resolvedModel = resolveChildModel(request, policy);
+    const maxTokens = request.maxTokens ?? request.profile?.maxTokens;
+    const inherited = request.contextMode === "inherit" ? request.inherited : undefined;
+    let run: Promise<Awaited<ReturnType<typeof runToolAgentLoop>>>;
+    if (inherited) {
+      const allowed = inheritAllowedToolNames(input.inherit?.parentTools, runtime.toolPolicy);
+      const reasoning = resolvedModel.thinkingLevel ?? inherited.reasoning;
+      if (
+        (resolvedModel.model !== undefined && resolvedModel.model !== inherited.modelId) ||
+        (resolvedModel.thinkingLevel !== undefined && resolvedModel.thinkingLevel !== (inherited.reasoning ?? "off"))
+      ) {
+        warnings.push("inherit: model or reasoning differs from the parent; the prompt cache is not reused");
+      }
+      const sink = progress.loopSink();
+      sink("Running the agent update");
+      run = input.llm.runToolAgent({
+        systemPrompt: inherited.systemPrompt,
+        prompt: buildChildBrief({
+          request,
+          allowedTools: inherited.tools.map((tool) => tool.name).filter((name) => allowed.has(name))
+        }),
+        messages: inherited.messages.slice(),
+        sessionId: inherited.sessionId ?? request.runId,
+        tools: inherited.tools.slice(),
+        maxTokens,
+        onProgress: sink,
+        signal: input.signal,
+        beforeToolCall: ({ toolCall }) =>
+          allowed.has(toolCall.name)
+            ? undefined
+            : { action: "deny", message: `Tool ${toolCall.name} is not available in this delegated run.` },
+        ...(maxTurns !== undefined ? { maxTurns } : {}),
+        ...(resolvedModel.model !== undefined ? { model: resolvedModel.model } : {}),
+        ...(reasoning !== undefined ? { reasoning } : {})
+      });
+    } else {
+      run = runToolAgentLoop({
         llm: input.llm,
-        systemPrompt: buildSystemPrompt({ request: input.request, runtime }),
-        prompt: input.request.prompt,
-        sessionId: input.request.runId,
+        systemPrompt: buildSystemPrompt({ request, runtime }),
+        prompt: request.prompt,
+        sessionId: request.runId,
         tools: buildTools(runtime),
-        maxTokens: input.request.maxTokens ?? input.request.profile?.maxTokens,
+        maxTokens,
         onProgress: progress.loopSink(),
         signal: input.signal,
         ...(maxTurns !== undefined ? { maxTurns } : {}),
         ...(resolvedModel.model !== undefined ? { model: resolvedModel.model } : {}),
         ...(resolvedModel.thinkingLevel !== undefined ? { reasoning: resolvedModel.thinkingLevel } : {})
-      }),
-      input.signal
-    );
+      });
+    }
+    const output = await withChildTimeout(timeoutMs, run, input.signal);
 
     const endedAt = clock();
-    const envelope = {
-      ...toChildRunResultEnvelope({
-        request: input.request,
-        output,
-        startedAt,
-        endedAt
-      }),
-      ...resolvedModel
-    };
+    const envelope = withWarnings(
+      {
+        ...toChildRunResultEnvelope({
+          request,
+          output,
+          startedAt,
+          endedAt
+        }),
+        ...resolvedModel
+      },
+      warnings
+    );
     input.registry.markTerminal(envelope);
     if (envelope.status === "failed" || envelope.status === "cancelled") {
       progress.failed(envelope.status === "cancelled" ? "cancelled" : (envelope.failure?.message ?? "failed"));
@@ -239,13 +295,16 @@ export async function executeChildRun(
     const failure = toChildRunFailure(error);
     const endedAt = clock();
     const status = statusForFailureCode(failure.code);
-    const envelope = toFailureEnvelope({
-      request: input.request,
-      failure,
-      startedAt,
-      endedAt,
-      status
-    });
+    const envelope = withWarnings(
+      toFailureEnvelope({
+        request,
+        failure,
+        startedAt,
+        endedAt,
+        status
+      }),
+      warnings
+    );
     // Store the full envelope on the registry — registers status + failure
     // + envelope in one call so `getResult` reflects every terminal state.
     input.registry.markTerminal(envelope);
@@ -267,6 +326,23 @@ export async function executeChildRun(
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Inherit mode helpers
+// ---------------------------------------------------------------------------
+
+function inheritUnavailableReason(request: ChildRunRequest, llm: ToolLlmAdapter): string | undefined {
+  if (!request.inherited) return "no parent request (the delegate tool was not run by the runtime)";
+  const supports = llm.metadata().supports;
+  if (supports?.runState !== true) return "the adapter does not support messages";
+  if (supports?.approvals !== true) return "the adapter does not support tool hooks";
+  return undefined;
+}
+
+function withWarnings(envelope: ChildRunResultEnvelope, warnings: string[]): ChildRunResultEnvelope {
+  if (warnings.length === 0) return envelope;
+  return { ...envelope, warnings: [...warnings, ...(envelope.warnings ?? [])] };
 }
 
 // ---------------------------------------------------------------------------
@@ -317,9 +393,10 @@ function validateRequest(
   }
   if (
     request.contextMode !== "isolated" &&
-    request.contextMode !== "fork"
+    request.contextMode !== "fork" &&
+    request.contextMode !== "inherit"
   ) {
-    return validationFailure(`contextMode must be "isolated" or "fork"`);
+    return validationFailure(`contextMode must be "isolated", "fork" or "inherit"`);
   }
   // Depth-gating safety net (primary gate is "tool not registered in child
   // runtimes" — Stage 6). This catches programmatic callers that bypass

@@ -58,6 +58,34 @@ export function buildChildSystemPrompt(input: BuildChildSystemPromptInput): stri
   return sections.join("\n\n");
 }
 
+export interface BuildChildBriefInput {
+  request: ChildRunRequest;
+  /** Parent tools the child may run, in the order they should be listed. */
+  allowedTools: readonly string[];
+}
+
+/**
+ * The user message that starts an `inherit` child after the parent's
+ * conversation: the child's role, constraints, tools it may use, deliverable
+ * and task. The parent's system prompt and messages stay unchanged in front
+ * of it, so they remain a cached prefix.
+ */
+export function buildChildBrief(input: BuildChildBriefInput): string {
+  const { request, allowedTools } = input;
+  const tools =
+    allowedTools.length > 0
+      ? `[Available Tools]\nYou may use: ${allowedTools.join(", ")}. Calls to any other tool in the list fail in this run.`
+      : "[Available Tools]\nNo tools are available in this run; answer from the conversation above.";
+  return [
+    "[Delegated Run]\nThe conversation above belongs to the parent agent and is context only. From here on you are a delegated run: do the task below and nothing else.",
+    CHILD_ROLE_BLOCK,
+    buildOperatingConstraintsBlock(request),
+    tools,
+    buildDeliverableBlock(request),
+    `[Task]\n${request.prompt.trim()}`
+  ].join("\n\n");
+}
+
 /**
  * Synthesis system prompt for Stage 7's separate-call synthesis. Kept here
  * so all child-side prompt construction lives in one file.
