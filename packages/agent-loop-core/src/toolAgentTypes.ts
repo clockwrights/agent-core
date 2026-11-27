@@ -31,6 +31,7 @@ export interface ToolAgentRuntimeMetadata {
     modelSelection?: boolean;
     runState?: boolean;
     approvals?: boolean;
+    compaction?: boolean;
   };
 }
 
@@ -157,4 +158,6 @@ export interface ToolAgentOutput {
   state?: RunState;
   /** Calls waiting for a human decision when `endReason` is "interrupted" (same as `state.interruptions`). */
   interruptions?: ToolInterruption[];
+  /** Compactions of the transcript during this call (see the adapter's `compaction` option). */
+  compactions?: number;
 }

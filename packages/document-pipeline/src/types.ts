@@ -70,6 +70,17 @@ export type DocumentPipelineRequest = {
    *   and the group falls back to "unknown".
    */
   minTier?: ClassificationTier;
+  /**
+   * Ask the classifier for a verbatim quote per field and verify it against
+   * the extracted text; each field then carries `citations`. Default false
+   * (prompts and output unchanged).
+   */
+  fieldCitations?: boolean;
+  /**
+   * Turn on review routing with these thresholds (`{}` uses the defaults).
+   * Absent: no `review` in the output.
+   */
+  review?: ReviewThresholds;
   /** Hard caps on resource usage. Falls back to pipeline-level defaults when absent. */
   limits?: Partial<DocumentPipelineLimits>;
 };
@@ -245,6 +256,32 @@ export type SegmentationMap = {
 
 export type ClassificationTier = "tier-a" | "tier-b" | "tier-c";
 
+/**
+ * How a field citation was checked.
+ * - `verified`: the quote was found in the unit's extracted text;
+ * - `not-found`: the quote is not in the text of any unit of the group;
+ * - `unverifiable`: the unit has no extracted text (image only), so it could not be checked;
+ * - `deterministic`: produced by a Tier-A rule from a known text position.
+ */
+export type FieldCitationStatus = "verified" | "not-found" | "unverifiable" | "deterministic";
+
+/** Evidence for an extracted field value (with `fieldCitations: true`). */
+export type FieldCitation = {
+  /** 1-based unit the quote was found in (or the unit the model named, when not verified). */
+  unitIndex: number;
+  /** Index into `AnalysisPackage.fileRecords` of the unit's file. */
+  sourceFileIndex: number;
+  /** 1-based page of the unit within its file. */
+  page: number;
+  /** The quoted text, trimmed (at most 300 characters). */
+  quote: string;
+  /** Character span of the quote in the unit's extracted text, when found. */
+  textSpan?: { start: number; end: number };
+  /** Union of the positioned layout blocks the span covers (normalized), when the unit has any. */
+  boundingBox?: BoundingBox;
+  status: FieldCitationStatus;
+};
+
 export type ExtractedField = {
   /** Field name as declared in the document policy or derived by the classifier. */
   name: string;
@@ -257,6 +294,55 @@ export type ExtractedField = {
   boundingBox?: BoundingBox;
   /** Extraction method: "deterministic", "ocr", "llm-text", "llm-multimodal". */
   method: string;
+  /**
+   * Evidence for the value. Present only with `fieldCitations: true`; empty
+   * when the field has no value or the model gave no quote.
+   */
+  citations?: FieldCitation[];
+};
+
+/** Thresholds for review routing; every field is optional. */
+export type ReviewThresholds = {
+  /** Segment confidence below this routes to review. Default 0.6 (the 0.5 unsegmented fallback is under it). */
+  segmentationConfidence?: number;
+  /** Classification confidence below this routes to review. Default 0.6. */
+  classificationConfidence?: number;
+  /** Field confidence below this routes to review. Default 0.5. */
+  fieldConfidence?: number;
+  /** Fields not checked for confidence or citations (e.g. optional fields). */
+  ignoreFields?: string[];
+  /** Also route fields whose citations are only "unverifiable". Default false. */
+  requireVerifiedCitations?: boolean;
+  /** `uncertaintyFlags` that route to review (exact names). Default none. */
+  reviewFlags?: string[];
+};
+
+export type ReviewReasonCode =
+  | "low-segmentation-confidence"
+  | "low-classification-confidence"
+  /** Label "unknown" or no classifier result. */
+  | "unknown-type"
+  /** The policy does not cover the type. */
+  | "unsupported-type"
+  | "low-field-confidence"
+  /** The field's quote is not in the document text. */
+  | "citation-not-found"
+  /** Only with `requireVerifiedCitations`: the quote could not be checked. */
+  | "citation-unverifiable"
+  /** An `uncertaintyFlags` entry listed in `reviewFlags` (the flag is in `detail`). */
+  | "flagged";
+
+export type ReviewReason = {
+  code: ReviewReasonCode;
+  groupId: string;
+  fieldName?: string;
+  detail?: string;
+};
+
+export type ReviewDecision = {
+  /** True when there is at least one reason. */
+  required: boolean;
+  reasons: ReviewReason[];
 };
 
 export type ClassifiedDocumentGroup = {
@@ -270,6 +356,8 @@ export type ClassifiedDocumentGroup = {
   fields: ExtractedField[];
   /** Flags raised during extraction, e.g. "mrz-visual-mismatch", "low-confidence-name". */
   uncertaintyFlags: string[];
+  /** Whether a person should check this group, and why. Present only with `review` on the request. */
+  review?: ReviewDecision;
 };
 
 // ---------------------------------------------------------------------------
@@ -328,6 +416,11 @@ export type AnalysisPackage = {
   /** Policy name and version that governed this analysis. Null when open-vocabulary mode was used. */
   policyRef: { name: string; version: string; contentHash: string } | null;
   processingLog: ProcessingLogEntry[];
+  /**
+   * All groups' review reasons, in group order. Present only with `review` on
+   * the request (and when the pipeline reached assembly).
+   */
+  review?: ReviewDecision;
 };
 
 // ---------------------------------------------------------------------------

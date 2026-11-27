@@ -21,6 +21,7 @@
 import type {
   ClassificationTier,
   DocumentPipelineExecutionMode,
+  ReviewThresholds,
 } from "./types.js";
 
 /**
@@ -40,6 +41,10 @@ export type PipelineDefaults = {
    * - "tier-c": skip A and B, go straight to multimodal LLM
    */
   minTier: ClassificationTier;
+  /** Field citations on by default (`LLM_DEFAULT_FIELD_CITATIONS`). Absent: off. */
+  fieldCitations?: boolean;
+  /** Review routing on by default with the default thresholds (`LLM_DEFAULT_REVIEW`). Absent: off. */
+  review?: ReviewThresholds;
 };
 
 export const BUILT_IN_DEFAULTS: PipelineDefaults = {
@@ -64,6 +69,8 @@ const VALID_TIERS: ClassificationTier[] = ["tier-a", "tier-b", "tier-c"];
 export function loadPipelineDefaults(
   env: NodeJS.ProcessEnv = process.env,
 ): PipelineDefaults {
+  const fieldCitations = parseBoolean(env["LLM_DEFAULT_FIELD_CITATIONS"], "LLM_DEFAULT_FIELD_CITATIONS");
+  const review = parseBoolean(env["LLM_DEFAULT_REVIEW"], "LLM_DEFAULT_REVIEW");
   return {
     executionMode:
       parseMode(env["LLM_DEFAULT_EXECUTION_MODE"]) ??
@@ -80,6 +87,8 @@ export function loadPipelineDefaults(
       ) ?? BUILT_IN_DEFAULTS.tierBThreshold,
     minTier:
       parseTier(env["LLM_DEFAULT_MIN_TIER"]) ?? BUILT_IN_DEFAULTS.minTier,
+    ...(fieldCitations !== undefined ? { fieldCitations } : {}),
+    ...(review === true ? { review: {} } : {}),
   };
 }
 
@@ -115,6 +124,14 @@ function parseThreshold(
     return undefined;
   }
   return n;
+}
+
+function parseBoolean(raw: string | undefined, fieldName: string): boolean | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  if (raw === "true" || raw === "1") return true;
+  if (raw === "false" || raw === "0") return false;
+  console.warn(`[pipeline-config] ${fieldName}="${raw}" is not true/false/1/0; using built-in default.`);
+  return undefined;
 }
 
 function parseTier(raw: string | undefined): ClassificationTier | undefined {

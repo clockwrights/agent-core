@@ -34,6 +34,7 @@ export type {
   ChildRunStatus,
   ChildRunToolCallSummary,
   ChildThinkingLevel,
+  InheritedParentRequest,
   OrchestratorDecision,
   OrchestratorSynthesisInput,
   ParentContextSlice
@@ -76,6 +77,7 @@ export {
 } from "./childRunResult.js";
 
 export {
+  buildChildBrief,
   buildChildSystemPrompt,
   buildDelegationBrief,
   buildDelegationGuidance,
@@ -83,9 +85,17 @@ export {
   buildSynthesisSystemPrompt
 } from "./orchestrationPrompt.js";
 export type {
+  BuildChildBriefInput,
   BuildChildSystemPromptInput,
   BuildSynthesisPromptInput
 } from "./orchestrationPrompt.js";
+export {
+  DELEGATION_TOOL_NAMES,
+  INHERIT_CONTEXT_MODE_DESCRIPTION,
+  inheritAllowedToolNames,
+  inheritedRequestFromContext
+} from "./inheritMode.js";
+export type { InheritModeOptions } from "./inheritMode.js";
 
 export {
   DEFAULT_MAX_FORK_CONTEXT_CHARS,
@@ -118,6 +128,7 @@ export {
   createDelegateTaskTool,
   createDelegateTaskToolDefinition,
   delegateTaskParameters,
+  delegateTaskParametersWithInherit,
   executeDelegateTask
 } from "./delegateTaskTool.js";
 export type {
@@ -136,7 +147,9 @@ export {
   createDelegateTasksTool,
   createDelegateTasksToolDefinition,
   delegateTasksParameters,
+  delegateTasksParametersWithInherit,
   delegateTasksTaskParameters,
+  delegateTasksTaskParametersWithInherit,
   executeDelegateTasks
 } from "./delegateTasksTool.js";
 export type {

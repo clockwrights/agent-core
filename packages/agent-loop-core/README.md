@@ -138,6 +138,7 @@ interface ToolAgentOutput {
   turns?: number;              // model calls made by this call
   state?: RunState;            // serializable run state; pass back as resumeFrom
   interruptions?: ToolInterruption[]; // calls waiting for approval when endReason is "interrupted"
+  compactions?: number;        // compactions of the transcript during this call
 }
 ```
 
@@ -167,13 +168,15 @@ output?.usage;     // tokens and cost
 - `usage`, `endReason`, `errorMessage` and `turns` come from the run; `state` is the run's serializable state.
 - **Conversations and resume:** `messages` and `resumeFrom` are forwarded to the runtime. With either, `prompt` is the new user turn and an empty `prompt` means none. `turns` counts this call's model calls (a resumed run's pending tool batch is not one); `state.turns` counts the whole run, and limits count the whole run too. See tool-agent-runtime's "Conversations, saved state and resume".
 - **Tool approval:** `beforeToolCall`, `afterToolCall` and `approvals` are forwarded. An "ask" ends the call with `endReason: "interrupted"` and `interruptions`; call again with `resumeFrom: output.state` and `approvals`. Denied calls appear in `toolCalls` with `isError: true`. See tool-agent-runtime's "Tool approval hooks".
+- **Tool execution context:** tools run by the runtime get tool-agent-runtime's `ToolExecutionContext` as the fifth `execute` argument (call id, turn, session id and the model request that produced the call). `limitToolResult` passes it on. Orchestration's `inherit` context mode uses it to start a child from the parent's exact request.
 - `onEvent` gets every runtime event; if it throws, the run continues, the error is reported once with `console.warn`, and no further events are forwarded for that run.
 - `onProgress` gets `Running <tool label>` when a tool starts (override with `toolProgressMessage`, return `undefined` to silence).
 - Errors thrown by the runtime (such as invalid limits) propagate to the caller.
 - **Model selection:** with a fixed `model`, `input.model` is ignored (`supports.modelSelection: false`). Pass a function to route on it — for example `model: (input) => modelsBySelector[input.model ?? "default"]`, where you build `modelsBySelector` from your llm-profiles config (an llm-profiles router whose factory returns pi-ai models works the same way: `(input) => router.forComponent(input.model ?? "main-agent")`).
 - `input.reasoning` overrides the adapter's `reasoning` for that call; `"off"` disables extended thinking.
 - `prepareStep` (adapter option) is passed to every run — for example `createToolResultClearing()` (below).
-- `metadata()` returns `{ enabled: true, supports: { limits: true, usage: true, events: true, modelSelection, runState: true, approvals: true } }`, where `modelSelection` is true for the function form of `model`.
+- `compaction` (adapter option) is passed to every run: older turns are replaced by a summary when the prompt reaches the trigger (default 85% of the context window). `compactions` in the output counts them. See [Managing context](#managing-context).
+- `metadata()` returns `{ enabled: true, supports: { limits: true, usage: true, events: true, modelSelection, runState: true, approvals: true, compaction: true } }`, where `modelSelection` is true for the function form of `model`.
 
 ### `runDocumentAgentLoop({ llm, adapter, createRuntimeContext?, onProgress? })`
 
@@ -194,7 +197,7 @@ interface DocumentAgentLoopAdapter<TState, TResult> {
 }
 ```
 
-The loop creates fresh state, builds the runtime context (capabilities like MCP / memory / skills, contributed via `createRuntimeContext`), optionally compacts the prompt if it exceeds `compactionThresholdChars`, runs the tool agent, and finally calls `finalize`. Runtime context cleanup runs in `finally`.
+The loop creates fresh state, builds the runtime context (capabilities like MCP / memory / skills, contributed via `createRuntimeContext`), optionally compacts the prompt if it exceeds `compactionThresholdChars` (a pre-run step for an oversized starting prompt; for growth during the run use the adapter's `compaction` option, see [Managing context](#managing-context)), runs the tool agent, and finally calls `finalize`. Runtime context cleanup runs in `finally`.
 
 ## Tool registry and policy
 
@@ -304,6 +307,26 @@ const llm = createRuntimeToolLlmAdapter({
 | `store` | none | Keep the full text of cleared results; the stub then tells the model to call `read_tool_output` with the id. |
 
 Error results are always kept. Cleared results lose their image parts too (the stub says so). Off unless you pass the hook: nothing is cleared by default.
+
+### Managing context
+
+Three tools, for three different problems. All are off by default and can be combined.
+
+| Problem | Use | What it does |
+|---|---|---|
+| Old tool results crowd every step | `createToolResultClearing()` as `prepareStep` | Replaces stale tool results with short stubs in what the model sees. Cheap, no model call, cache-friendly in batches; the saved transcript keeps everything. |
+| A long run grows past the window | adapter `compaction` option | Replaces older turns with a model-written summary in the run's transcript (and saved state) when the prompt reaches the trigger; retries once after a context-overflow error. |
+| The starting prompt itself is too big | `documentAgentLoop`'s `compactionThresholdChars` + `compact()` | Before the run, your adapter builds a smaller prompt with domain knowledge (which documents or sections to keep). No model call. |
+
+```ts
+const adapter = createRuntimeToolLlmAdapter({
+  model,
+  prepareStep: createToolResultClearing({ store }),
+  compaction: { triggerRatio: 0.85 },   // the default trigger; configurable
+});
+```
+
+Clearing lowers the reported prompt size, so with both on, compaction starts later and runs less often. Compaction keeps the task (the messages before the first reply, including pinned memory) verbatim by default. All options are described in tool-agent-runtime's "Compaction" section.
 
 ### Deferred tools and `tool_search` (opt-in)
 
@@ -556,7 +579,7 @@ A few short pages — identity, standing preferences, key decisions — can be l
 - `collectPinnedMemory(files, options)` / `loadPinnedMemory(asyncStore, options)` select pinned pages — explicit `paths` first, then every page under `prefix` (e.g. `"system/"`) in path order — and render them as one `<pinned-memory>` block (frontmatter stripped).
 - `maxChars` (default 4 000) is a hard budget: pages that do not fit are left out **whole** (never cut mid-page) and reported in `omitted` with `overBudget: true`.
 - Pages with **untrusted** provenance are excluded unless `allowUntrusted: true`.
-- With `pinnedMemory` in `createMemoryRuntimeContext`, the block is returned as `context.pinnedMemory` (plus warning diagnostics for left-out pages). Put it in the user side of the conversation rather than the system prompt, so memory updates do not invalidate the cached system prompt. The simplest way is its own message before the prompt: `messages: pinnedMemoryMessages(context.pinnedMemory)` (returns `[]` when nothing is pinned; skip it when resuming, the saved state already holds it). Prepending it to the prompt works too.
+- With `pinnedMemory` in `createMemoryRuntimeContext`, the block is returned as `context.pinnedMemory` (plus warning diagnostics for left-out pages). Put it in the user side of the conversation rather than the system prompt, so memory updates do not invalidate the cached system prompt. The simplest way is its own message before the prompt: `messages: pinnedMemoryMessages(context.pinnedMemory)` (returns `[]` when nothing is pinned; skip it when resuming, the saved state already holds it). That puts two user messages in a row (block, then prompt); if a provider may not accept that, use `prompt: pinnedMemoryPrompt(context.pinnedMemory, prompt)` instead, which puts the block in front of the prompt in **one** user message (returns the prompt unchanged when nothing is pinned; also only when a run starts).
 - With `pinned` in the engine config, `lint()` warns (`pinned-memory` category) when the tier is over budget, holds untrusted pages, or lists missing ones.
 
 ### Wiring memory into the agent

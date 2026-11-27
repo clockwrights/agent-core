@@ -72,7 +72,7 @@ All Phase 1 child runs are:
 - **Sequential by default; parallel via `delegate_tasks`.** Single delegations through `delegate_task` are sequential because the parent's tool loop serialises tool calls. Batched delegations through `delegate_tasks` run children in parallel inside one tool call, bounded by `policy.maxConcurrentChildren`. Result projection preserves input order regardless of completion order.
 - **Depth = 1.** Children cannot spawn grandchildren. Enforced two ways: child runtimes do not get `delegate_task` / `delegate_tasks` registered (primary), and each tool's `execute` rejects when `parentDepth >= policy.maxDepth` (defense-in-depth).
 - **Proposal-only.** Child runs do not directly mutate authoritative state. The `ChildRunResultEnvelope.proposedChanges` field is reserved for a future candidate-edit child variant; in Phase 1 it is always `undefined`.
-- **Isolated by default.** `defaultContextMode = "isolated"`. A child receives a fresh brief; opt in to `"fork"` mode and supply `parentContext: ParentContextSlice[]` on the request when the child needs selected parent context.
+- **Isolated by default.** `defaultContextMode = "isolated"`. A child receives a fresh brief; opt in to `"fork"` mode and supply `parentContext: ParentContextSlice[]` on the request when the child needs selected parent context, or enable `"inherit"` mode (see [Inherit mode](#inherit-mode-reuse-the-parents-prompt-cache)) when the child should continue from the parent's whole conversation.
 
 ---
 
@@ -95,6 +95,7 @@ import {
   type OrchestratorDecision,
   type OrchestratorSynthesisInput,
   type ParentContextSlice,
+  type InheritedParentRequest,
 
   // Registry
   ChildRunCancelledError,
@@ -132,6 +133,8 @@ import {
   toFailureEnvelope,
 
   // Prompt builders
+  buildChildBrief,                   // inherit mode: the child's first user message
+  type BuildChildBriefInput,
   buildChildSystemPrompt,
   buildSynthesisPrompt,
   buildSynthesisSystemPrompt,
@@ -143,6 +146,13 @@ import {
   DEFAULT_MAX_SLICE_CHARS,
   buildForkedContextBlock,
   type ForkContextOptions,
+
+  // Inherit mode
+  DELEGATION_TOOL_NAMES,             // ["delegate_task", "delegate_tasks"], always denied to an inherit child
+  INHERIT_CONTEXT_MODE_DESCRIPTION,  // sentence added to the tool description when enabled
+  inheritAllowedToolNames,           // (parentTools, policy) => Set of names the child may run
+  inheritedRequestFromContext,       // tool execution context => InheritedParentRequest | undefined
+  type InheritModeOptions,           // { parentTools? }
 
   // Runtime
   DEFAULT_CHILD_PRESET,
@@ -161,6 +171,7 @@ import {
   createDelegateTaskTool,
   createDelegateTaskToolDefinition,
   delegateTaskParameters,
+  delegateTaskParametersWithInherit, // schema used when inherit is enabled
   executeDelegateTask,
   type DelegateTaskInput,
   type DelegateTaskToolResult,
@@ -173,6 +184,8 @@ import {
   createDelegateTasksToolDefinition, // RegisteredTool, source "system", risk "read"
   delegateTasksParameters,           // { tasks: DelegateTasksTaskInput[] }
   delegateTasksTaskParameters,       // schema of one task
+  delegateTasksParametersWithInherit,     // schemas used when inherit is enabled
+  delegateTasksTaskParametersWithInherit,
   executeDelegateTasks,              // run a batch without the tool wrapper
   type DelegateTasksInput,
   type DelegateTasksTaskInput,
@@ -210,7 +223,7 @@ interface ChildRunRequest {
   label: string;
   description: string;
   prompt: string;
-  contextMode: "isolated" | "fork";
+  contextMode: "isolated" | "fork" | "inherit";
   executionMode: "blocking_inline";
   profile?: ChildExecutionProfile;
   maxTokens?: number;
@@ -222,6 +235,7 @@ interface ChildRunRequest {
   idempotencyKey?: string;
   metadata?: Record<string, string>;
   parentContext?: ParentContextSlice[];   // only used when contextMode === "fork"
+  inherited?: InheritedParentRequest;     // only used when contextMode === "inherit" (set by the delegate tools)
 }
 ```
 
@@ -273,7 +287,7 @@ interface OrchestrationPolicy {
   maxDepth: number;                                    // Phase 1: 1
   maxActiveChildrenPerParent: number;                  // Phase 1: 3
   defaultChildTimeoutMs: number;                       // Phase 1: 120_000
-  defaultContextMode: "isolated" | "fork";             // Phase 1: "isolated"
+  defaultContextMode: "isolated" | "fork" | "inherit";  // Phase 1: "isolated" ("inherit" needs the tool's `inherit` option)
   defaultAllowWriteTools: boolean;                     // Phase 1: false
   defaultStateMutationMode: "proposal_only" | "direct_apply";  // Phase 1: "proposal_only"
   synthesisMode: "separate_call" | "inline_tool_result";       // Phase 1: "separate_call" only
@@ -340,7 +354,7 @@ Sibling to `delegate_task` (singular). Same domain-neutral name shape, registere
     label: string;        // ≤ 100 chars
     description: string;
     prompt: string;       // ≤ policy.maxChildPromptChars
-    contextMode?: "isolated" | "fork";
+    contextMode?: "isolated" | "fork";   // plus "inherit" when enabled
     maxTokens?: number;
     timeoutMs?: number;
   }>;
@@ -389,7 +403,7 @@ The LLM-visible tool name is exactly `delegate_task` — domain-neutral, registe
   label: string;        // ≤ 100 chars
   description: string;
   prompt: string;       // ≤ policy.maxChildPromptChars
-  contextMode?: "isolated" | "fork";
+  contextMode?: "isolated" | "fork";   // plus "inherit" when enabled
   maxTokens?: number;   // ≤ policy.maxChildTokens
   timeoutMs?: number;   // > 0
 }
@@ -418,6 +432,29 @@ Children must not spawn grandchildren in Phase 1. Two independent mechanisms:
 2. **Defense in depth: the tool's `execute` rejects when `parentDepth >= policy.maxDepth`.** Catches future refactors that ever register the tool in a child runtime.
 
 Old draft plans considered using a deny-list approach (every child preset's `deny` array includes `delegate_task`). That was rejected: deny-lists rot every time a new preset is added.
+
+An `inherit` child is the one exception to point 1: it is shown the parent's tool list, `delegate_task` included, because the prompt cache needs the same list. Its calls to the delegation tools (`DELEGATION_TOOL_NAMES`) are always denied by a `beforeToolCall` hook, and point 2 still applies.
+
+## Inherit mode: reuse the parent's prompt cache
+
+Opt-in. `isolated` and `fork` children send a request that shares nothing with the parent's, so they pay full price for every token of context. An `inherit` child continues from the parent's **real model request**: the same tools in the same order, the same system prompt, the same session id and the same messages, minus the assistant reply that holds the delegating call. One new user message, the brief, is added at the end. The provider's prompt cache then serves everything up to the delegating turn. All children of a `delegate_tasks` batch share that cached prefix.
+
+```ts
+const delegate = createDelegateTaskTool({
+  parentRunId, parentDepth: 0, llm, registry,
+  inherit: { parentTools: parentRegisteredTools }, // RegisteredTool[] with risk / source metadata
+});
+// same option on createDelegateTasksTool
+```
+
+- **Turning it on** adds `"inherit"` to the tool's `contextMode` parameter and one sentence to its description (`INHERIT_CONTEXT_MODE_DESCRIPTION`). Without the option, the schema and description are byte-identical to before, and `"inherit"` is rejected with a validation error. `policy.defaultContextMode` may be `"inherit"` only for tools that enable it.
+- **Where the parent request comes from:** the runtime's tool execution context (`execute`'s fifth argument in `@maya-ai/tool-agent-runtime`), so it reflects any `prepareStep` override of that step. See `inheritedRequestFromContext`.
+- **Tools the child may run:** the child sees all of the parent's tools but runs only `inheritAllowedToolNames(parentTools, childToolPolicy)`. These are the parent's registered tools filtered by the child's preset policy (read-only `read_only_research` unless the request names another preset), minus the delegation tools. Any other call gets the error result `Tool <name> is not available in this delegated run.`, and the run continues. Without `parentTools` the child may run none of them. The brief lists the allowed tools.
+- **The brief** (`buildChildBrief`) holds the child role, the operating constraints, the allowed tools, the deliverable and the delegated `prompt`. The parent's system prompt is not changed, so the child-role text is in this message instead.
+- **Model:** the usual resolution order (call > profile > policy > adapter default) applies. When nothing is resolved, the child uses the adapter's default model and the parent's reasoning level. An explicit model or reasoning level that differs from the parent's is allowed, but the envelope then carries the warning `inherit: model or reasoning differs from the parent; the prompt cache is not reused`.
+- **Fallback:** when the parent request is missing (the tool was not run by the runtime, or by a pending call resumed from saved state), or the adapter does not report `supports.runState` and `supports.approvals`, the child runs **isolated**, and its envelope (and the tool result the parent sees) carries `inherit unavailable: <reason>; ran isolated`.
+- **Not changed:** the result is the same summary-only envelope; the child's transcript is not merged into the parent's. Depth stays 1, and timeouts and limits apply as for any child. If the consumer gives children `compaction`, a child may compact the inherited transcript, which replaces the cached prefix.
+- **Size and privacy:** the child receives everything the parent saw, including tool results from untrusted sources. Prefer `isolated` for verifiers and independent research. Use `inherit` for workers that continue in-progress work, and `fork` when only a hand-picked excerpt should cross over. `ChildRunRequest.inherited` holds the parent's transcript by reference, so a registry that persists requests stores it too.
 
 ---
 
@@ -571,6 +608,7 @@ Lives in `test/`:
 | `foundations.test.ts` | Registry transitions, policy defaults, limit checks, preset resolver, public-surface domain-neutrality grep. |
 | `childRunExecutor.test.ts` | Success / empty-output / undefined-output paths; LLM error / timeout / validation rejection paths; runtime disposal on every code path; runtime-factory-failure stranding guard; tool / runtime threading; cancellation paths (pre-aborted signal short-circuits without LLM call or registry pollution; mid-call abort yields `cancelled` envelope and disposes runtime; signal forwarded into `runToolAgentLoop`; timeout-vs-abort precedence); structured completion metrics (`tools`, `errors`, `chars` in the completion line, zero-output edge case, failed runs do not emit the structured-metrics line). |
 | `contextFork.test.ts` | `buildForkedContextBlock` rendering, ordering, truncation, label sanitisation; `buildChildSystemPrompt` fork branch with section ordering; determinism. |
+| `inheritMode.test.ts` | Inherit mode end-to-end through the reference adapter: the child's first call has the parent's system prompt, tools (same order), session id and messages plus one brief; denied write and delegation calls; `delegate_tasks` children share the prefix; offline cache reuse with pi-ai's faux provider (`cacheRead` > 0, isolated child 0); fallbacks to isolated with warnings; the model-change warning; unchanged schemas when not enabled; `inheritAllowedToolNames`; `buildChildBrief`. |
 | `delegateTaskTool.test.ts` | Tool registration shape; success projection; validation paths; depth-gating safety net; active-child cap (`maxActiveChildrenPerParent`); runtime-failure projection; reusability boundary; signal forwarding from context into the child's LLM call; pre-aborted signal yields `cancelled` payload without registry pollution. |
 | `orchestratorLoop.test.ts` | Synthesis prompt section order and conditional sections; no-delegation short-circuit; one/multi-child synthesis with sessionId distinctness; synthesis-failure fallback; phase-machine error class; `mergeWithDelegateTool`; reusability boundary; signal forwarded into the parent `runToolAgentLoop`; parent-loop abort produces the distinct `"Parent loop cancelled"` warning and final text. |
 | `orchestratorIntegration.test.ts` | End-to-end with a scripted LLM stub: 4-call ordering for two delegate calls + synthesis; mixed success/failure visibility in synthesis prompt (this test surfaced and locked in the `markTerminal` registry symmetry); all-failure path still synthesizes; validation rejection isolation; progress timeline tagging; registry/state agreement. |

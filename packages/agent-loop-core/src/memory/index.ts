@@ -43,7 +43,8 @@ export type {
 export {
   collectPinnedMemory,
   loadPinnedMemory,
-  pinnedMemoryMessages
+  pinnedMemoryMessages,
+  pinnedMemoryPrompt
 } from "./pinnedMemory.js";
 export type {
   PinnedMemory,

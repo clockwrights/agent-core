@@ -3,7 +3,9 @@ import type {
   AssistantMessageEvent,
   ImageContent,
   Message,
+  Model,
   TextContent,
+  ThinkingLevel,
   Tool,
   ToolResultMessage,
   Usage,
@@ -105,6 +107,29 @@ export type ToolResultOverride = Partial<Pick<AgentToolResult<any>, "content" | 
 /** A human decision for an interrupted tool call, passed on resume in `approvals`. */
 export type ToolApproval = { approve: true } | { approve: false; message?: string };
 
+/** What started a compaction: the size estimate, a context-overflow error, or `compactMessages`. */
+export type CompactionTrigger = "threshold" | "overflow" | "manual";
+
+/** One compaction of a run's transcript (kept in `RunState.compactions`). */
+export interface CompactionRecord {
+  /** The turn the compaction ran before (1-based); 0 for `compactMessages`. */
+  turn: number;
+  trigger: CompactionTrigger;
+  /** Estimated prompt tokens before and after. */
+  tokensBefore: number;
+  tokensAfter: number;
+  /**
+   * Messages of the old transcript replaced by the summary message, starting
+   * at `summaryIndex` (this includes the initial user message the summary
+   * was added to). Rebuild: `messages.splice(summaryIndex, removedMessages, summary)`.
+   */
+  removedMessages: number;
+  /** Index of the message holding the summary. */
+  summaryIndex: number;
+  /** Transcript length right after the compaction (replies from this index on have current usage). */
+  messageCount: number;
+}
+
 /** One completed turn: the model call and the tool batch it triggered. */
 export interface AgentStep {
   /** 1-based turn number. */
@@ -131,6 +156,37 @@ export interface AgentToolResult<T> {
 /** Callback used by tools to stream partial execution updates. */
 export type AgentToolUpdateCallback<T = any> = (partialResult: AgentToolResult<T>) => void;
 
+/** The model request that produced a tool call, exactly as it was sent. */
+export interface ToolExecutionRequest {
+  model: Model<any>;
+  /** Reasoning level of the call; undefined when extended thinking was off. */
+  reasoning?: ThinkingLevel;
+  systemPrompt: string;
+  /** Tools offered on the call, in the order sent. */
+  tools: readonly AgentTool<any>[];
+  /**
+   * Messages sent on the call (after any `prepareStep` override). They end
+   * with the message before the assistant reply that holds the tool call.
+   * A frozen snapshot, shared by every tool of the batch.
+   */
+  messages: readonly AgentMessage[];
+}
+
+/** Fifth argument of `AgentTool.execute`: where the call came from. */
+export interface ToolExecutionContext {
+  toolCallId: string;
+  /** 1-based turn of the model call that requested the tool. */
+  turn: number;
+  /** The run's session id, when it has one. */
+  sessionId?: string;
+  /**
+   * The model request that produced the call. Absent for pending calls run
+   * from a saved state (`resumeFrom` / `messages`) before any model call of
+   * this invocation.
+   */
+  request?: ToolExecutionRequest;
+}
+
 /**
  * Tool definition consumed by the agent runtime.
  * Extends pi-ai's Tool schema type with runtime execution metadata.
@@ -143,12 +199,17 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
    * Useful for adapting legacy or LLM-produced argument shapes.
    */
   prepareArguments?: (args: unknown) => Static<TParameters>;
-  /** Execute the tool. Throw on failure rather than encoding errors in content. */
+  /**
+   * Execute the tool. Throw on failure rather than encoding errors in content.
+   * `context` is set when the runtime runs the tool; callers outside the
+   * runtime may omit it.
+   */
   execute: (
     toolCallId: string,
     params: Static<TParameters>,
     signal?: AbortSignal,
     onUpdate?: AgentToolUpdateCallback<TDetails>,
+    context?: ToolExecutionContext,
   ) => Promise<AgentToolResult<TDetails>>;
   /**
    * Per-tool execution mode.
@@ -213,4 +274,29 @@ export type AgentEvent =
       args: Record<string, unknown>;
       reason?: string;
       data?: Record<string, unknown>;
+    }
+  | {
+      type: "compact_boundary";
+      trigger: CompactionTrigger;
+      /** The turn the compaction ran before (1-based). */
+      turn: number;
+      /** Estimated prompt tokens before and after. */
+      tokensBefore: number;
+      tokensAfter: number;
+      /** Old messages replaced by `summary`, starting at `summaryIndex`. */
+      removedMessages: number;
+      summaryIndex: number;
+      /** Transcript length after the compaction. */
+      keptMessages: number;
+      /** The message that now holds the summary. */
+      summary: AgentMessage;
+      /** Usage of the summariser call (also added to the run's usage). */
+      usage: AgentUsage;
+    }
+  | {
+      type: "compaction_failed";
+      trigger: CompactionTrigger;
+      turn: number;
+      /** Why the summariser failed. The run continues uncompacted. */
+      error: string;
     };

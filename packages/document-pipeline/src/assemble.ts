@@ -14,9 +14,11 @@ import type {
   DocumentUnit,
   FileRecord,
   ProcessingLogEntry,
+  ReviewThresholds,
   SegmentationMap,
   UnitExtractionResult,
 } from "./types.js";
+import { reviewGroups } from "./review.js";
 
 // ---------------------------------------------------------------------------
 // Input type
@@ -41,6 +43,8 @@ export type AssemblyInput = {
   policy: DocumentPolicy | null;
   /** Ordered log of stage executions collected by the orchestrator. */
   processingLog: ProcessingLogEntry[];
+  /** Review thresholds; when set, groups and the package get a `review` decision. */
+  review?: ReviewThresholds;
 };
 
 // ---------------------------------------------------------------------------
@@ -68,12 +72,22 @@ export function assembleAnalysisPackage(input: AssemblyInput): AnalysisPackage {
     },
   ];
 
-  return {
+  let classifiedGroups = input.classifiedGroups;
+  let review: AnalysisPackage["review"];
+  if (input.review) {
+    const reviewed = reviewGroups(input.classifiedGroups, input.segmentationMap, input.review);
+    classifiedGroups = reviewed.groups;
+    review = reviewed.decision;
+    const flagged = reviewed.groups.filter((g) => g.review.required).length;
+    log.push({ stage: "review", status: "ok", detail: `${flagged} of ${reviewed.groups.length} groups need review` });
+  }
+
+  const pkg: AnalysisPackage = {
     fileRecords: input.fileRecords,
     units: input.units,
     unitExtractions: input.unitExtractions,
     segmentationMap: input.segmentationMap,
-    classifiedGroups: input.classifiedGroups,
+    classifiedGroups,
     policyRef: input.policy
       ? {
           name: input.policy.name,
@@ -83,6 +97,8 @@ export function assembleAnalysisPackage(input: AssemblyInput): AnalysisPackage {
       : null,
     processingLog: log,
   };
+  if (review) pkg.review = review;
+  return pkg;
 }
 
 // ---------------------------------------------------------------------------

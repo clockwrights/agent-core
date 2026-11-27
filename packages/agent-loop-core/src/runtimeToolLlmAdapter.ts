@@ -38,6 +38,12 @@ export interface RuntimeToolLlmAdapterOptions {
    */
   prepareStep?: ToolAgentRunInput["prepareStep"];
   /**
+   * Compaction during each run (see tool-agent-runtime's `compaction`):
+   * older turns are replaced by a summary when the prompt reaches the
+   * trigger (default 85% of the context window). Absent: never compacts.
+   */
+  compaction?: ToolAgentRunInput["compaction"];
+  /**
    * Progress message emitted through `onProgress` when a tool starts.
    * Default: `Running <tool label>`. Return undefined to stay silent.
    */
@@ -64,6 +70,8 @@ export interface RuntimeToolLlmAdapterOptions {
  *   means no new user turn.
  * - `beforeToolCall` / `afterToolCall` / `approvals` are forwarded; an
  *   interrupted run returns `endReason: "interrupted"` and `interruptions`.
+ * - `compaction` (adapter option) is passed to every run; `compactions`
+ *   counts the compactions of this call.
  * - Errors thrown by the runtime (for example invalid limits) propagate.
  */
 /** Turn cap the reference adapter applies when neither the call nor `defaults` sets one. */
@@ -86,7 +94,8 @@ export function createRuntimeToolLlmAdapter(options: RuntimeToolLlmAdapterOption
         events: true,
         modelSelection: typeof options.model === "function",
         runState: true,
-        approvals: true
+        approvals: true,
+        compaction: true
       }
     }),
 
@@ -99,6 +108,7 @@ export function createRuntimeToolLlmAdapter(options: RuntimeToolLlmAdapterOption
       const finishedCalls: Array<{ seq: number; call: ToolAgentOutput["toolCalls"][number] }> = [];
       let seq = 0;
       let turns = 0;
+      let compactions = 0;
       const run: { end?: Extract<AgentEvent, { type: "agent_end" }> } = {};
       let onEventFailed = false;
 
@@ -120,6 +130,9 @@ export function createRuntimeToolLlmAdapter(options: RuntimeToolLlmAdapterOption
           }
           case "turn_end":
             turns += 1;
+            break;
+          case "compact_boundary":
+            compactions += 1;
             break;
           case "agent_end":
             run.end = event;
@@ -162,7 +175,8 @@ export function createRuntimeToolLlmAdapter(options: RuntimeToolLlmAdapterOption
           budget: input.budget ?? defaults.budget,
           toolTimeoutMs: input.toolTimeoutMs ?? defaults.toolTimeoutMs,
           maxParallelTools: input.maxParallelTools ?? defaults.maxParallelTools,
-          prepareStep: options.prepareStep
+          prepareStep: options.prepareStep,
+          ...(options.compaction !== undefined ? { compaction: options.compaction } : {})
         },
         emit
       );
@@ -178,7 +192,8 @@ export function createRuntimeToolLlmAdapter(options: RuntimeToolLlmAdapterOption
         // so derive this call's model calls from the state when it is there.
         turns: finished?.state ? finished.state.turns - (input.resumeFrom?.turns ?? 0) : turns,
         ...(finished?.state ? { state: finished.state } : {}),
-        ...(finished?.state?.interruptions ? { interruptions: finished.state.interruptions } : {})
+        ...(finished?.state?.interruptions ? { interruptions: finished.state.interruptions } : {}),
+        ...(compactions > 0 ? { compactions } : {})
       };
     }
   };

@@ -1,0 +1,30 @@
+{
+  "description": "TD3 passport MRZ with fieldCitations and review: every MRZ field cites its line deterministically; nothing needs review.",
+  "input": {
+    "type": "text",
+    "fileName": "passport.txt",
+    "text": "PASSPORT\nSPECIMEN - NOT A REAL DOCUMENT\n\nP<UTOSAMPLE<<TEST<PERSON<<<<<<<<<<<<<<<<<<<<\nX000000010UTO7001011F2912314<<<<<<<<<<<<<<02\n"
+  },
+  "request": {
+    "fieldCitations": true,
+    "review": {}
+  },
+  "expected": {
+    "groups": [
+      {
+        "label": "passport",
+        "tier": "tier-a",
+        "citations": {
+          "surname": "deterministic",
+          "given_names": "deterministic",
+          "document_number": "deterministic",
+          "nationality": "deterministic",
+          "date_of_birth": "deterministic",
+          "expiry_date": "deterministic"
+        },
+        "review": []
+      }
+    ],
+    "reviewRequired": false
+  }
+}

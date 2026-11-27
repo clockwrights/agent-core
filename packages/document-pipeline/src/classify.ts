@@ -36,6 +36,7 @@ import {
   buildFieldExtractionPrompt,
 } from "./policy.js";
 import type { PipelineDocument, PipelineLlmAdapter } from "./llm.js";
+import { attachFieldCitations } from "./citations.js";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -77,6 +78,11 @@ export type ClassificationRequest = {
    * `runDocumentPipeline` fills this when `deps.nativePdf` is set.
    */
   sourceDocuments?: ClassificationSourceDocument[];
+  /**
+   * Ask for a verbatim quote per field and verify it (`ExtractedField.citations`).
+   * Default false: prompts and output unchanged.
+   */
+  fieldCitations?: boolean;
 };
 
 export type ClassificationSourceDocument = {
@@ -109,7 +115,23 @@ export async function classifyGroups(
 // Per-group classification
 // ---------------------------------------------------------------------------
 
+/** Quote the classifier collected for each field (Tier A line, or the model's `quote`). */
+const fieldQuotes = new WeakMap<ExtractedField, string>();
+
 async function classifyGroup(
+  group: DocumentGroup,
+  request: ClassificationRequest,
+): Promise<ClassifiedDocumentGroup> {
+  const result = await classifyGroupTiers(group, request);
+  if (!request.fieldCitations) return result;
+  return attachFieldCitations(result, fieldQuotes, {
+    group,
+    units: request.units,
+    extractions: request.extractions,
+  });
+}
+
+async function classifyGroupTiers(
   group: DocumentGroup,
   request: ClassificationRequest,
 ): Promise<ClassifiedDocumentGroup> {
@@ -264,12 +286,12 @@ function detectMrz(
       const nameSection = trimmed.slice(5, 44); // after P<CCC
       const [surname, givenRaw] = nameSection.split("<<");
       if (surname) {
-        fields.push(mrzField("surname", surname.replace(/<+/g, " ").trim(), group.unitIndices[0]));
+        fields.push(mrzField("surname", surname.replace(/<+/g, " ").trim(), group.unitIndices[0], trimmed));
       }
       if (givenRaw) {
         const givenName = givenRaw.replace(/<+$/, "").replace(/<+/g, " ").trim();
         if (givenName) {
-          fields.push(mrzField("given_names", givenName, group.unitIndices[0]));
+          fields.push(mrzField("given_names", givenName, group.unitIndices[0], trimmed));
         }
       }
       break;
@@ -282,22 +304,22 @@ function detectMrz(
     if (trimmed.length >= 44 && !/^P</.test(trimmed)) {
       const docNumber = trimmed.slice(0, 9).replace(/<+$/, "");
       if (docNumber) {
-        fields.push(mrzField("document_number", docNumber, group.unitIndices[0]));
+        fields.push(mrzField("document_number", docNumber, group.unitIndices[0], trimmed));
       }
       // Nationality: positions 10–12
       const nationality = trimmed.slice(10, 13).replace(/<+$/, "");
       if (nationality && nationality !== "<<<") {
-        fields.push(mrzField("nationality", nationality, group.unitIndices[0]));
+        fields.push(mrzField("nationality", nationality, group.unitIndices[0], trimmed));
       }
       // Date of birth: positions 13–18 (YYMMDD)
       const dob = trimmed.slice(13, 19);
       if (/^\d{6}$/.test(dob)) {
-        fields.push(mrzField("date_of_birth", formatMrzDate(dob, "birth"), group.unitIndices[0]));
+        fields.push(mrzField("date_of_birth", formatMrzDate(dob, "birth"), group.unitIndices[0], trimmed));
       }
       // Expiry: positions 21–26
       const expiry = trimmed.slice(21, 27);
       if (/^\d{6}$/.test(expiry)) {
-        fields.push(mrzField("expiry_date", formatMrzDate(expiry, "expiry"), group.unitIndices[0]));
+        fields.push(mrzField("expiry_date", formatMrzDate(expiry, "expiry"), group.unitIndices[0], trimmed));
       }
       break;
     }
@@ -320,8 +342,11 @@ function detectBarcode(text: string, group: DocumentGroup): TierAResult | null {
   };
 }
 
-function mrzField(name: string, value: string, sourceUnitIndex: number): ExtractedField {
-  return { name, value, confidence: 0.88, sourceUnitIndex, method: "deterministic" };
+function mrzField(name: string, value: string, sourceUnitIndex: number, line: string): ExtractedField {
+  const field: ExtractedField = { name, value, confidence: 0.88, sourceUnitIndex, method: "deterministic" };
+  // The MRZ line is the field's evidence (used with `fieldCitations`).
+  fieldQuotes.set(field, line);
+  return field;
 }
 
 /**
@@ -360,9 +385,28 @@ type LlmClassificationResponse = {
     value: string;
     confidence: number;
     sourceUnitIndex: number;
+    /** Verbatim evidence, requested with `fieldCitations`. */
+    quote?: string;
   }>;
   uncertaintyFlags: string[];
 };
+
+/** Map a parsed field to an `ExtractedField`, remembering its quote. */
+function toExtractedField(
+  f: LlmClassificationResponse["fields"][number],
+  group: DocumentGroup,
+  method: string,
+): ExtractedField {
+  const field: ExtractedField = {
+    name: f.name,
+    value: f.value,
+    confidence: clamp(f.confidence ?? 0),
+    sourceUnitIndex: f.sourceUnitIndex ?? group.unitIndices[0] ?? 1,
+    method,
+  };
+  if (typeof f.quote === "string") fieldQuotes.set(field, f.quote);
+  return field;
+}
 
 async function runTierB(
   group: DocumentGroup,
@@ -376,6 +420,7 @@ async function runTierB(
     request.units,
     request.extractions,
     request.context,
+    { fieldCitations: request.fieldCitations === true },
   );
 
   let responseText: string | undefined;
@@ -384,7 +429,8 @@ async function runTierB(
       systemPrompt,
       prompt: userPrompt,
       sessionId: `doc-classify-${group.id}`,
-      maxTokens: 1024,
+      // Quotes need room in the answer.
+      maxTokens: request.fieldCitations ? 2048 : 1024,
     });
     responseText = output?.text?.trim();
   } catch {
@@ -402,13 +448,7 @@ async function runTierB(
     unsupported: parsed.unsupported ?? false,
     classificationTier: "tier-b",
     classificationConfidence: clamp(parsed.confidence ?? 0),
-    fields: (parsed.fields ?? []).map((f) => ({
-      name: f.name,
-      value: f.value,
-      confidence: clamp(f.confidence ?? 0),
-      sourceUnitIndex: f.sourceUnitIndex ?? group.unitIndices[0] ?? 1,
-      method: "llm-text",
-    })),
+    fields: (parsed.fields ?? []).map((f) => toExtractedField(f, group, "llm-text")),
     uncertaintyFlags: parsed.uncertaintyFlags ?? [],
   };
 }
@@ -487,6 +527,7 @@ async function runTierC(
     request.units,
     request.extractions,
     request.context,
+    { fieldCitations: request.fieldCitations === true },
   );
 
   const attachmentHint = native
@@ -519,13 +560,7 @@ async function runTierC(
   if (!parsed) return null;
 
   // For low-confidence fields, run focused per-field extraction prompts.
-  const fields: ExtractedField[] = (parsed.fields ?? []).map((f) => ({
-    name: f.name,
-    value: f.value,
-    confidence: clamp(f.confidence ?? 0),
-    sourceUnitIndex: f.sourceUnitIndex ?? group.unitIndices[0] ?? 1,
-    method: "llm-multimodal",
-  }));
+  const fields: ExtractedField[] = (parsed.fields ?? []).map((f) => toExtractedField(f, group, "llm-multimodal"));
 
   const lowConfFields = fields.filter((f) => f.confidence < 0.5);
   for (const field of lowConfFields) {
@@ -540,6 +575,8 @@ async function runTierC(
       field.value = refinedValue.value;
       field.confidence = clamp(refinedValue.confidence);
       field.method = "llm-multimodal";
+      if (refinedValue.quote !== undefined) fieldQuotes.set(field, refinedValue.quote);
+      else fieldQuotes.delete(field);
     }
   }
 
@@ -565,8 +602,10 @@ async function refineFieldWithImage(
     | { document: PipelineDocument; pageHint: string },
   request: ClassificationRequest,
   adapter: PipelineLlmAdapter,
-): Promise<{ value: string; confidence: number } | null> {
-  const prompt = buildFieldExtractionPrompt(fieldName, documentLabel, request.policy);
+): Promise<{ value: string; confidence: number; quote?: string } | null> {
+  const prompt = buildFieldExtractionPrompt(fieldName, documentLabel, request.policy, {
+    fieldCitations: request.fieldCitations === true,
+  });
   const isDocument = "document" in attachment;
 
   let responseText: string | undefined;
@@ -593,9 +632,14 @@ async function refineFieldWithImage(
       .replace(/^```(?:json)?\s*/i, "")
       .replace(/\s*```$/, "")
       .trim();
-    const parsed = JSON.parse(json) as { value?: string; confidence?: number };
+    const parsed = JSON.parse(json) as { value?: string; confidence?: number; quote?: string };
     if (typeof parsed.value === "string") {
-      return { value: parsed.value, confidence: clamp(parsed.confidence ?? 0.5) };
+      const refined: { value: string; confidence: number; quote?: string } = {
+        value: parsed.value,
+        confidence: clamp(parsed.confidence ?? 0.5),
+      };
+      if (typeof parsed.quote === "string") refined.quote = parsed.quote;
+      return refined;
     }
   } catch {
     // parse failure — return null

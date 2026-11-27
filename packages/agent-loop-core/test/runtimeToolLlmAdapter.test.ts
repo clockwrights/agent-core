@@ -77,7 +77,7 @@ test("metadata reports full support", () => {
   const adapter = adapterFor(script());
   assert.deepEqual(adapter.metadata(), {
     enabled: true,
-    supports: { limits: true, usage: true, events: true, modelSelection: false, runState: true, approvals: true }
+    supports: { limits: true, usage: true, events: true, modelSelection: false, runState: true, approvals: true, compaction: true }
   });
   const routed = createRuntimeToolLlmAdapter({ model: () => script().model });
   assert.equal(routed.metadata().supports?.modelSelection, true, "function form can honour input.model");
@@ -492,4 +492,46 @@ test("approvals: a denied call is reported as an error tool call", async () => {
   )) as ToolAgentOutput;
   assert.deepEqual(output.toolCalls, [{ name: "echo", args: { message: "x" }, isError: true }]);
   assert.equal(output.endReason, "completed");
+});
+
+// ---------------------------------------------------------------------------
+// Compaction
+// ---------------------------------------------------------------------------
+
+test("compaction: the adapter option reaches every run and the output counts compactions", async () => {
+  const usage = { usage: { input: 600, output: 10 } };
+  const replay = script(
+    replyToolCalls([{ name: "echo", arguments: { message: "x".repeat(400) }, id: "a" }], usage),
+    replyToolCalls([{ name: "echo", arguments: { message: "y".repeat(400) }, id: "b" }], usage),
+    replyText("done")
+  );
+  const summaries: string[] = [];
+  const events: AgentEvent[] = [];
+  const adapter = adapterFor(replay, {
+    compaction: {
+      triggerTokens: 500,
+      keepRecentTokens: 0,
+      summarize: async ({ transcript }) => {
+        summaries.push(transcript);
+        return { text: "SUMMARY" };
+      }
+    }
+  });
+  const output = (await adapter.runToolAgent(baseInput({ onEvent: (event) => events.push(event) }))) as ToolAgentOutput;
+  assert.equal(output.text, "done");
+  assert.equal(output.compactions, 1);
+  assert.equal(summaries.length, 1);
+  assert.equal(output.state?.compactions?.length, 1);
+  assert.equal(events.filter((e) => e.type === "compact_boundary").length, 1, "events are forwarded");
+  assert.equal(output.turns, 3, "the summary call is not a model call of the run");
+
+  // Without the option nothing is compacted and the field is absent.
+  const plain = script(
+    replyToolCalls([{ name: "echo", arguments: { message: "x".repeat(400) }, id: "a" }], usage),
+    replyToolCalls([{ name: "echo", arguments: { message: "y".repeat(400) }, id: "b" }], usage),
+    replyText("done")
+  );
+  const without = (await adapterFor(plain).runToolAgent(baseInput())) as ToolAgentOutput;
+  assert.equal(without.compactions, undefined);
+  assert.equal(without.state?.compactions, undefined);
 });

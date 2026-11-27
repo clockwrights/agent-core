@@ -117,6 +117,19 @@ Schema:
   "uncertaintyFlags": ["<flag>"]
 }`;
 
+/** The output schema with a verbatim `quote` per field (used with `fieldCitations`). */
+const CLASSIFICATION_OUTPUT_SCHEMA_WITH_QUOTES = CLASSIFICATION_OUTPUT_SCHEMA.replace(
+  '      "sourceUnitIndex": <1-based page/unit number where this field was found>\n',
+  '      "sourceUnitIndex": <1-based page/unit number where this field was found>,\n' +
+    '      "quote": "<the exact text on the page this value was read from, copied verbatim, max 200 characters>"\n',
+);
+
+/** Options for the classification and field prompts. */
+export type ClassificationPromptOptions = {
+  /** Ask for a verbatim `quote` per field. Default false (prompt unchanged). */
+  fieldCitations?: boolean;
+};
+
 const OPEN_VOCABULARY_GUIDANCE = `\
 No document policy is active. Operate in open-vocabulary mode:
 - Classify the document using your best judgement of the document type.
@@ -139,13 +152,14 @@ export function buildClassificationPrompt(
   units: DocumentUnit[],
   extractions: UnitExtractionResult[],
   context?: { language?: string; country?: string; submissionIntent?: string },
+  options: ClassificationPromptOptions = {},
 ): ClassificationPrompt {
-  const systemPrompt = buildSystemPrompt(policy);
+  const systemPrompt = buildSystemPrompt(policy, options.fieldCitations === true);
   const userPrompt = buildUserPrompt(group, units, extractions, context);
   return { systemPrompt, userPrompt };
 }
 
-function buildSystemPrompt(policy: DocumentPolicy | undefined): string {
+function buildSystemPrompt(policy: DocumentPolicy | undefined, fieldCitations: boolean): string {
   const parts: string[] = [
     "You are a document classification and field extraction assistant.",
     "Your task is to identify the type of the document and extract the fields specified in the policy.",
@@ -170,7 +184,7 @@ function buildSystemPrompt(policy: DocumentPolicy | undefined): string {
     parts.push(OPEN_VOCABULARY_GUIDANCE, "");
   }
 
-  parts.push("## Output format", CLASSIFICATION_OUTPUT_SCHEMA);
+  parts.push("## Output format", fieldCitations ? CLASSIFICATION_OUTPUT_SCHEMA_WITH_QUOTES : CLASSIFICATION_OUTPUT_SCHEMA);
 
   return parts.join("\n");
 }
@@ -239,6 +253,7 @@ export function buildFieldExtractionPrompt(
   fieldName: string,
   documentLabel: string,
   policy: DocumentPolicy | undefined,
+  options: ClassificationPromptOptions = {},
 ): string {
   const policyHint = policy
     ? `\nApply the extraction rules from policy "${policy.name}" for document type "${documentLabel}".\n`
@@ -246,7 +261,9 @@ export function buildFieldExtractionPrompt(
   return (
     `Extract the value of the field "${fieldName}" from the document image.` +
     policyHint +
-    `Return ONLY a JSON object: { "value": "<extracted value or empty string>", "confidence": <0-1> }.` +
+    (options.fieldCitations
+      ? `Return ONLY a JSON object: { "value": "<extracted value or empty string>", "confidence": <0-1>, "quote": "<the exact text the value was read from, copied verbatim>" }.`
+      : `Return ONLY a JSON object: { "value": "<extracted value or empty string>", "confidence": <0-1> }.`) +
     ` No explanation, no markdown.`
   );
 }

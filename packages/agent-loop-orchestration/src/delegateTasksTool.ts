@@ -15,7 +15,7 @@
  * tool name, no consumer-app imports.
  */
 
-import type { AgentTool } from "@maya-ai/tool-agent-runtime";
+import type { AgentTool, ToolExecutionContext } from "@maya-ai/tool-agent-runtime";
 import { Type, type Static } from "typebox";
 import { v4 as uuid } from "uuid";
 
@@ -38,6 +38,11 @@ import type {
   ChildRunResultEnvelope
 } from "./orchestrationTypes.js";
 import type { ProgressSink } from "./progress.js";
+import {
+  INHERIT_CONTEXT_MODE_DESCRIPTION,
+  inheritedRequestFromContext,
+  type InheritModeOptions
+} from "./inheritMode.js";
 
 // ---------------------------------------------------------------------------
 // LLM-facing schema
@@ -78,8 +83,28 @@ export const delegateTasksParameters = Type.Object({
   })
 });
 
-export type DelegateTasksTaskInput = Static<typeof delegateTasksTaskParameters>;
-export type DelegateTasksInput = Static<typeof delegateTasksParameters>;
+/** A task of `delegateTasksParametersWithInherit`: "inherit" added to `contextMode`. */
+export const delegateTasksTaskParametersWithInherit = Type.Object({
+  ...delegateTasksTaskParameters.properties,
+  contextMode: Type.Optional(
+    Type.Union(
+      [Type.Literal("isolated"), Type.Literal("fork"), Type.Literal("inherit")],
+      {
+        description: `How much parent context the delegate receives. Defaults to isolated. ${INHERIT_CONTEXT_MODE_DESCRIPTION}`
+      }
+    )
+  )
+});
+
+/** `delegateTasksParameters` with "inherit" allowed per task; used when `inherit` is enabled. */
+export const delegateTasksParametersWithInherit = Type.Object({
+  tasks: Type.Array(delegateTasksTaskParametersWithInherit, {
+    description: "Tasks to run in parallel. Order is preserved in the result."
+  })
+});
+
+export type DelegateTasksTaskInput = Static<typeof delegateTasksTaskParametersWithInherit>;
+export type DelegateTasksInput = Static<typeof delegateTasksParametersWithInherit>;
 
 // ---------------------------------------------------------------------------
 // Tool context
@@ -102,6 +127,12 @@ export interface DelegateTasksToolContext {
    * batched call. Parent abort propagates to all children in the batch.
    */
   signal?: AbortSignal;
+  /**
+   * Enables `contextMode: "inherit"` per task: each child continues from
+   * this run's real model request, so all of them reuse the same cached
+   * prefix. Off by default; without it the tool schema is unchanged.
+   */
+  inherit?: InheritModeOptions;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,15 +142,16 @@ export interface DelegateTasksToolContext {
 export function createDelegateTasksTool(
   context: DelegateTasksToolContext
 ): AgentTool<typeof delegateTasksParameters> {
+  const description =
+    "Delegate multiple bounded tasks to separate agent runs in parallel. Returns one result per task in input order. Use when several research / validation subtasks are independent and can run concurrently; for a single delegation, prefer delegate_task.";
   return {
     name: DELEGATE_TASKS_TOOL_NAME,
     label: "Delegate Tasks (Parallel)",
-    description:
-      "Delegate multiple bounded tasks to separate agent runs in parallel. Returns one result per task in input order. Use when several research / validation subtasks are independent and can run concurrently; for a single delegation, prefer delegate_task.",
-    parameters: delegateTasksParameters,
+    description: context.inherit ? `${description} ${INHERIT_CONTEXT_MODE_DESCRIPTION}` : description,
+    parameters: (context.inherit ? delegateTasksParametersWithInherit : delegateTasksParameters) as typeof delegateTasksParameters,
     executionMode: "sequential",
-    execute: async (_toolCallId, params) => {
-      return executeDelegateTasks(params as DelegateTasksInput, context);
+    execute: async (_toolCallId, params, _signal, _onUpdate, executionContext) => {
+      return executeDelegateTasks(params as DelegateTasksInput, context, executionContext);
     }
   };
 }
@@ -168,7 +200,8 @@ export interface DelegateTasksToolResult {
 
 export async function executeDelegateTasks(
   input: DelegateTasksInput,
-  context: DelegateTasksToolContext
+  context: DelegateTasksToolContext,
+  executionContext?: ToolExecutionContext
 ): Promise<DelegateTasksToolResult> {
   const policy = context.policy ?? DEFAULT_ORCHESTRATION_POLICY;
   const clock = context.clock ?? (() => new Date().toISOString());
@@ -210,7 +243,7 @@ export async function executeDelegateTasks(
   const requests: { index: number; request: ChildRunRequest }[] = [];
   const preFailures: { index: number; envelope: ChildRunResultEnvelope }[] = [];
   input.tasks.forEach((task, index) => {
-    const failure = validateTaskShape(task, policy);
+    const failure = validateTaskShape(task, policy, context.inherit !== undefined);
     if (failure) {
       preFailures.push({
         index,
@@ -222,7 +255,12 @@ export async function executeDelegateTasks(
         )
       });
     } else {
-      requests.push({ index, request: toChildRunRequest(task, context, policy) });
+      const request = toChildRunRequest(task, context, policy);
+      if (request.contextMode === "inherit") {
+        const inherited = inheritedRequestFromContext(executionContext);
+        if (inherited) request.inherited = inherited;
+      }
+      requests.push({ index, request });
     }
   });
 
@@ -270,7 +308,8 @@ export async function executeDelegateTasks(
             runtimeFactory: context.runtimeFactory,
             buildSystemPrompt: context.buildSystemPrompt,
             buildTools: context.buildTools,
-            signal: context.signal
+            signal: context.signal,
+            ...(context.inherit ? { inherit: context.inherit } : {})
           })
       });
 
@@ -292,7 +331,8 @@ export async function executeDelegateTasks(
 
 function validateTaskShape(
   task: DelegateTasksTaskInput,
-  policy: OrchestrationPolicy
+  policy: OrchestrationPolicy,
+  inheritEnabled: boolean
 ): string | undefined {
   if (typeof task.label !== "string" || task.label.trim().length === 0) {
     return "label must be non-empty";
@@ -307,12 +347,14 @@ function validateTaskShape(
   if (task.prompt.length > policy.maxChildPromptChars) {
     return `prompt exceeds maxChildPromptChars (${policy.maxChildPromptChars})`;
   }
-  if (
-    task.contextMode !== undefined &&
-    task.contextMode !== "isolated" &&
-    task.contextMode !== "fork"
-  ) {
-    return `contextMode must be "isolated" or "fork"`;
+  const mode = task.contextMode ?? policy.defaultContextMode;
+  if (mode === "inherit" && !inheritEnabled) {
+    return `contextMode "inherit" is not enabled for this tool`;
+  }
+  if (mode !== "isolated" && mode !== "fork" && mode !== "inherit") {
+    return inheritEnabled
+      ? `contextMode must be "isolated", "fork" or "inherit"`
+      : `contextMode must be "isolated" or "fork"`;
   }
   if (task.maxTokens !== undefined) {
     if (!Number.isFinite(task.maxTokens) || task.maxTokens <= 0) {

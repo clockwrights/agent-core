@@ -19,7 +19,10 @@
 //            | { "type": "zip", "fileName", "files": [{ "name", "text" }] },
 //     "request": { ...extra DocumentPipelineRequest fields },   // optional
 //     "expected": { "groups": [{ "units", "method", "confidence", "label",
-//                                "tier", "fields": { name: value }, "flags" }] }
+//                                "tier", "fields": { name: value }, "flags",
+//                                "citations": { name: status },     // with fieldCitations
+//                                "review": [reason codes] }],       // with review
+//                    "reviewRequired": boolean }                    // optional, with review
 //   }
 // ---------------------------------------------------------------------------
 
@@ -44,6 +47,10 @@ type ExpectedGroup = {
   tier?: string;
   fields?: Record<string, string>;
   flags?: string[];
+  /** Field name → status of its first citation ("none" when it has none). */
+  citations?: Record<string, string>;
+  /** Review reason codes of the group, in order. */
+  review?: string[];
 };
 
 type GoldenFixture = {
@@ -51,7 +58,7 @@ type GoldenFixture = {
   knownIssue?: string;
   input: GoldenInput;
   request?: Partial<DocumentPipelineRequest>;
-  expected: { groups: ExpectedGroup[] };
+  expected: { groups: ExpectedGroup[]; reviewRequired?: boolean };
 };
 
 const GOLDEN_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "golden");
@@ -75,6 +82,10 @@ function actualGroups(pkg: AnalysisPackage): Required<ExpectedGroup>[] {
       tier: classified?.classificationTier ?? "(none)",
       fields: Object.fromEntries((classified?.fields ?? []).map((f) => [f.name, f.value])),
       flags: classified?.uncertaintyFlags ?? [],
+      citations: Object.fromEntries(
+        (classified?.fields ?? []).map((f) => [f.name, f.citations?.[0]?.status ?? "none"]),
+      ),
+      review: (classified?.review?.reasons ?? []).map((r) => r.code),
     };
   });
 }
@@ -119,5 +130,8 @@ for (const file of fixtureFiles) {
     fixture.expected.groups.forEach((expected, i) => {
       assert.deepEqual(pick(actual[i]!, expected), expected, `group ${i + 1}`);
     });
+    if (fixture.expected.reviewRequired !== undefined) {
+      assert.equal(pkg.review?.required, fixture.expected.reviewRequired, "package review decision");
+    }
   });
 }

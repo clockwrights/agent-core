@@ -6,7 +6,14 @@
  * through these contracts.
  */
 
-import type { AgentEndReason, AgentUsage, ToolInterruption } from "@maya-ai/tool-agent-runtime";
+import type {
+  AgentEndReason,
+  AgentMessage,
+  AgentTool,
+  AgentUsage,
+  ToolExecutionRequest,
+  ToolInterruption
+} from "@maya-ai/tool-agent-runtime";
 
 // ---------------------------------------------------------------------------
 // Lifecycle status
@@ -27,7 +34,29 @@ export type ChildRunStatus =
   | "timed_out"
   | "cancelled";
 
-export type ChildContextMode = "isolated" | "fork";
+/**
+ * - `isolated`: the child sees only its own system prompt and the brief.
+ * - `fork`: the same, plus consumer-selected `parentContext` slices.
+ * - `inherit`: the child continues from the parent's real model request
+ *   (tools, system prompt, session id, messages) plus the brief, so the
+ *   provider's prompt cache is reused. Opt-in on the delegate tools.
+ */
+export type ChildContextMode = "isolated" | "fork" | "inherit";
+
+/** The parent's model request an `inherit` child replays. */
+export interface InheritedParentRequest {
+  /** Parent's session id; the child uses it so the request reaches the warm cache. Default: the child's runId. */
+  sessionId?: string;
+  systemPrompt: string;
+  /** Parent's tools in the order sent (the child may run only the allowed ones). */
+  tools: readonly AgentTool<any>[];
+  /** Messages of the parent's request, ending before the delegating assistant reply. */
+  messages: readonly AgentMessage[];
+  /** Provider model id of the parent's call (used to tell when the child's model differs). */
+  modelId?: string;
+  /** Reasoning level of the parent's call; the child uses it unless one is resolved. */
+  reasoning?: ToolExecutionRequest["reasoning"];
+}
 
 /**
  * Phase 1 always uses "blocking_inline". The discriminator is encoded in the
@@ -92,6 +121,13 @@ export interface ChildRunRequest {
    * via `buildForkedContextBlock`. Ignored when `contextMode === "isolated"`.
    */
   parentContext?: ParentContextSlice[];
+  /**
+   * The parent request to continue from when `contextMode === "inherit"`.
+   * Set by the delegate tools from the runtime's tool execution context.
+   * Missing (or an adapter without `runState` / `approvals` support): the
+   * child runs isolated and its envelope carries a warning.
+   */
+  inherited?: InheritedParentRequest;
 }
 
 // ---------------------------------------------------------------------------

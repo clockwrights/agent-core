@@ -111,10 +111,27 @@ export function collectPinnedMemory(
  * cached prefix stable while the pages do not change. Returns `[]` for an
  * empty or missing block. Pass it only when a run starts: a resumed run
  * already has it in `resumeFrom.messages`.
+ *
+ * The prompt then follows as a second user message in a row. Use
+ * `pinnedMemoryPrompt` instead when a provider may not accept two
+ * consecutive user messages.
  */
 export function pinnedMemoryMessages(block: string | undefined, options: { timestamp?: number } = {}): AgentMessage[] {
   if (!block) return [];
   return [{ role: "user", content: block, timestamp: options.timestamp ?? Date.now() }];
+}
+
+/**
+ * The pinned block and the prompt as one prompt string, for runs where the
+ * block should not be a message of its own (some providers reject two user
+ * messages in a row). The block comes first, so the start of the user turn
+ * stays the same while the pages do not change. Returns the prompt unchanged
+ * for an empty or missing block. Like `pinnedMemoryMessages`, use it only
+ * when a run starts.
+ */
+export function pinnedMemoryPrompt(block: string | undefined, prompt: string): string {
+  if (!block) return prompt;
+  return prompt ? `${block}\n\n${prompt}` : block;
 }
 
 /** Load pinned memory from an async store (e.g. the markdown-wiki memory runtime's store). */

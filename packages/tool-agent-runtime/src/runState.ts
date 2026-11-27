@@ -9,7 +9,7 @@
  */
 
 import { createHash } from "node:crypto";
-import type { AgentEndReason, AgentMessage, AgentUsage } from "./types.js";
+import type { AgentEndReason, AgentMessage, AgentUsage, CompactionRecord } from "./types.js";
 
 /** Current `RunState.version`. */
 export const RUN_STATE_VERSION = 1;
@@ -35,6 +35,8 @@ export interface RunState {
    * "interrupted"). Resume with `approvals` keyed by `toolCallId`.
    */
   interruptions?: ToolInterruption[];
+  /** Compactions of this run's transcript, oldest first (see `ToolAgentRunInput.compaction`). */
+  compactions?: CompactionRecord[];
 }
 
 export interface ToolInterruption {
@@ -184,6 +186,16 @@ export function parseRunState(input: string | unknown): RunState {
       if (!ok) bad(`interruptions[${i}] must have toolCallId, toolName, arguments and argumentsHash`);
     });
   }
+  if (s.compactions !== undefined) {
+    if (!Array.isArray(s.compactions)) bad("compactions must be an array");
+    (s.compactions as unknown[]).forEach((entry, i) => {
+      const ok =
+        isPlainObject(entry) &&
+        COMPACTION_TRIGGERS.has(String(entry.trigger)) &&
+        COMPACTION_COUNTS.every((key) => Number.isInteger(entry[key]) && (entry[key] as number) >= 0);
+      if (!ok) bad(`compactions[${i}] must have a trigger and non-negative integer ${COMPACTION_COUNTS.join(", ")}`);
+    });
+  }
 
   const state: RunState = {
     version: RUN_STATE_VERSION,
@@ -198,8 +210,14 @@ export function parseRunState(input: string | unknown): RunState {
   if (s.interruptions !== undefined) {
     state.interruptions = (s.interruptions as ToolInterruption[]).map((entry) => ({ ...entry }));
   }
+  if (s.compactions !== undefined) {
+    state.compactions = (s.compactions as CompactionRecord[]).map((entry) => ({ ...entry }));
+  }
   return state;
 }
+
+const COMPACTION_TRIGGERS = new Set(["threshold", "overflow", "manual"]);
+const COMPACTION_COUNTS = ["turn", "tokensBefore", "tokensAfter", "removedMessages", "summaryIndex", "messageCount"] as const;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;

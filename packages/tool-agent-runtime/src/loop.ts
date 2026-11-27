@@ -36,6 +36,13 @@ import {
   type ToolResultMessage,
   type Transport,
 } from "@earendil-works/pi-ai";
+import {
+  estimateContextTokens,
+  isOverflowReply,
+  performCompaction,
+  resolveCompaction,
+  type CompactionOptions,
+} from "./compaction.js";
 import { ToolTimeoutError } from "./errors.js";
 import { hashArguments, parseRunState, RUN_STATE_VERSION, type RunState, type ToolInterruption } from "./runState.js";
 import { selectActiveTools, type PrepareStep, type StopCondition } from "./steps.js";
@@ -48,11 +55,15 @@ import {
   type BeforeToolCallContext,
   type ToolApproval,
   type ToolCallDecision,
+  type ToolExecutionContext,
+  type ToolExecutionRequest,
   type ToolResultOverride,
   type AgentStep,
   type AgentTool,
   type AgentToolResult,
   type AgentUsage,
+  type CompactionRecord,
+  type CompactionTrigger,
 } from "./types.js";
 
 export type AgentEventSink = (event: AgentEvent) => void;
@@ -167,6 +178,14 @@ export interface ToolAgentRunInput {
    * reasoning level, active tools or messages for that step only.
    */
   prepareStep?: PrepareStep;
+  /**
+   * Opt-in compaction: before each model call, when the estimated prompt
+   * reaches the trigger (default 85% of the context window), older turns are
+   * replaced by a summary in the run's transcript. Emits `compact_boundary`
+   * (or `compaction_failed`); records each compaction in `RunState.compactions`.
+   * Absent: never compacts.
+   */
+  compaction?: CompactionOptions;
 }
 
 /** Result of `runAgent`. */
@@ -210,6 +229,7 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
   validateStart(input);
   const resumeFrom = input.resumeFrom === undefined ? undefined : parseRunState(input.resumeFrom);
   validateApprovals(input.approvals, resumeFrom);
+  const compaction = input.compaction === undefined ? undefined : resolveCompaction(input.compaction, input.model, input.maxTokens);
 
   // Starting transcript. A trailing failed/aborted model reply is dropped so
   // the model retries that turn (providers also reject such messages).
@@ -237,6 +257,7 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
     defaultTimeoutMs: input.toolTimeoutMs,
     maxParallel: input.maxParallelTools,
     batchStrategy: input.toolBatchStrategy ?? "serialize-batch",
+    sessionId: input.sessionId,
   };
 
   const totalUsage = resumeFrom ? cloneUsage(resumeFrom.usage) : emptyUsage();
@@ -246,6 +267,9 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
   let toolCallsExecuted = resumeFrom?.toolCallsExecuted ?? 0;
   let reason: AgentEndReason | undefined;
   let errorMessage: string | undefined;
+  const compactions: CompactionRecord[] = resumeFrom?.compactions?.map((record) => ({ ...record })) ?? [];
+  let compactionFailures = 0;
+  let compactionOff = false;
 
   const snapshot = (end?: AgentEndReason): RunState => {
     const state: RunState = {
@@ -259,7 +283,60 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
     if (end !== undefined && errorMessage !== undefined) state.errorMessage = errorMessage;
     if (resumeFrom?.metadata !== undefined) state.metadata = resumeFrom.metadata;
     if (end === "interrupted" && interruptions) state.interruptions = interruptions.map((i) => ({ ...i }));
+    if (compactions.length > 0) state.compactions = compactions.map((record) => ({ ...record }));
     return state;
+  };
+
+  /**
+   * Compact the transcript before the next model call when it is over the
+   * trigger ("threshold") or the last call overflowed ("overflow"). Fails
+   * open: a failing summariser emits `compaction_failed` and the run goes on;
+   * after 2 failures in a row compaction is off for this invocation.
+   */
+  const maybeCompact = async (trigger: CompactionTrigger): Promise<"compacted" | "skipped" | "aborted"> => {
+    if (!compaction || compactionOff) return "skipped";
+    const usageFrom = compactions[compactions.length - 1]?.messageCount ?? 0;
+    const tokensBefore = estimateContextTokens({ messages, systemPrompt: input.systemPrompt, tools: input.tools, usageFrom });
+    if (trigger === "threshold" && tokensBefore < compaction.threshold) return "skipped";
+    let result;
+    try {
+      result = await performCompaction({
+        messages,
+        options: compaction,
+        trigger,
+        turn: turns + 1,
+        model: input.model,
+        systemPrompt: input.systemPrompt,
+        tools: input.tools,
+        streamOptions,
+        tokensBefore,
+        usageFrom,
+      });
+    } catch (err) {
+      if (input.signal?.aborted) return "aborted";
+      compactionFailures += 1;
+      if (compactionFailures >= 2) compactionOff = true;
+      emit({ type: "compaction_failed", trigger, turn: turns + 1, error: err instanceof Error ? err.message : String(err) });
+      return "skipped";
+    }
+    if (!result) return "skipped";
+    compactionFailures = 0;
+    messages.splice(0, messages.length, ...result.messages);
+    addUsage(totalUsage, result.usage);
+    compactions.push(result.record);
+    emit({
+      type: "compact_boundary",
+      trigger,
+      turn: result.record.turn,
+      tokensBefore: result.record.tokensBefore,
+      tokensAfter: result.record.tokensAfter,
+      removedMessages: result.record.removedMessages,
+      summaryIndex: result.record.summaryIndex,
+      keptMessages: messages.length,
+      summary: result.summary,
+      usage: cloneUsage(result.usage),
+    });
+    return "compacted";
   };
 
   /** Run the checkpoint hook; on failure set the error and return false. */
@@ -366,7 +443,7 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
       // (denied, blocked, invalid) are recorded now; allowed calls stay
       // pending and are decided again on resume.
       const finalPlans = plans.filter((p): p is ErrorPlan => p.kind === "error");
-      const early = await executeToolCalls(finalPlans, { ...execution, tools: turnTools, turn: turns, failures: [] });
+      const early = await executeToolCalls(finalPlans, { ...execution, tools: turnTools, turn: turns, request: currentRequest, failures: [] });
       toolCallsExecuted += finalPlans.filter((p) => p.counts).length;
       record(early.messages);
       for (const ask of asks) {
@@ -390,6 +467,7 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
       ...execution,
       tools: turnTools,
       turn: turns,
+      request: currentRequest,
       afterToolCall: input.afterToolCall,
       failures,
     });
@@ -440,6 +518,8 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
   // Tools offered on the latest model call (prepareStep may narrow them);
   // pending calls from a saved state run against the full tool list.
   let currentTools: AgentTool<any>[] | undefined;
+  // The latest model request, passed to tools as `context.request`.
+  let currentRequest: ToolExecutionRequest | undefined;
   // Calls waiting for a human decision when the run ends "interrupted".
   let interruptions: ToolInterruption[] | undefined;
 
@@ -479,7 +559,28 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
   // 4. Limits already used up by earlier invocations: no further model call.
   if (reason === undefined && turns > 0) reason = limitReached();
 
+  // At most one compaction per model call, and one overflow retry per call.
+  let compactedForThisCall = false;
+  let overflowRetried = false;
+
   while (reason === undefined) {
+    if (compaction && !compactedForThisCall) {
+      const outcome = await maybeCompact("threshold");
+      if (outcome === "aborted") {
+        reason = "aborted";
+        errorMessage = "Aborted during compaction";
+        break;
+      }
+      if (outcome === "compacted") {
+        compactedForThisCall = true;
+        // The summariser's tokens count toward the budget.
+        if (budgetReached(input.budget, totalUsage)) {
+          reason = "budget";
+          break;
+        }
+      }
+    }
+
     let prepared;
     try {
       prepared = input.prepareStep
@@ -508,6 +609,41 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
       stepStreamOptions,
       emit,
     );
+
+    // Context too long: compact and retry this call once. The failed reply
+    // is not kept and is not a turn; its usage still counts.
+    if (
+      compaction?.onOverflow === "compact" &&
+      !overflowRetried &&
+      isOverflowReply(assistantMessage, compaction.window)
+    ) {
+      overflowRetried = true;
+      const outcome = await maybeCompact("overflow");
+      if (outcome === "compacted" || outcome === "aborted") {
+        addUsage(totalUsage, usageOf(assistantMessage));
+        if (outcome === "aborted") {
+          reason = "aborted";
+          errorMessage = "Aborted during compaction";
+          break;
+        }
+        compactedForThisCall = true;
+        if (budgetReached(input.budget, totalUsage)) {
+          reason = "budget";
+          break;
+        }
+        continue;
+      }
+    }
+
+    compactedForThisCall = false;
+    overflowRetried = false;
+    currentRequest = {
+      model: prepared?.model ?? input.model,
+      ...(stepStreamOptions.reasoning !== undefined ? { reasoning: stepStreamOptions.reasoning } : {}),
+      systemPrompt: context.systemPrompt ?? "",
+      tools: Object.freeze(stepTools.slice()),
+      messages: Object.freeze(context.messages),
+    };
     messages.push(assistantMessage);
     turns += 1;
     const turnUsage = usageOf(assistantMessage);
@@ -754,10 +890,14 @@ interface ToolExecutionOptions {
   defaultTimeoutMs: number | undefined;
   maxParallel: number | undefined;
   batchStrategy: "serialize-batch" | "sequential-barriers";
+  sessionId: string | undefined;
+  /** Turn number reported to tools and `afterToolCall`. */
+  turn?: number;
+  /** The model request that produced the batch, if any. */
+  request?: ToolExecutionRequest;
 }
 
 interface BatchOptions extends ToolExecutionOptions {
-  /** Turn number reported to `afterToolCall`. */
   turn: number;
   afterToolCall?: ToolAgentRunInput["afterToolCall"];
   /** Collects `afterToolCall` failure messages. */
@@ -914,10 +1054,14 @@ async function runTool(
     options.emit({ type: "tool_execution_update", toolCallId: tc.id, toolName: tc.name, args: tc.arguments, partialResult });
   };
 
+  const context: ToolExecutionContext = { toolCallId: tc.id, turn: options.turn ?? 0 };
+  if (options.sessionId !== undefined) context.sessionId = options.sessionId;
+  if (options.request !== undefined) context.request = options.request;
+
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     if (timeoutMs === undefined) {
-      const result = await tool.execute(tc.id, args as never, options.signal, onUpdate);
+      const result = await tool.execute(tc.id, args as never, options.signal, onUpdate, context);
       return { result, isError: false };
     }
 
@@ -932,7 +1076,7 @@ async function runTool(
         reject(error);
       }, timeoutMs);
     });
-    const result = await Promise.race([tool.execute(tc.id, args as never, signal, onUpdate), timeout]);
+    const result = await Promise.race([tool.execute(tc.id, args as never, signal, onUpdate, context), timeout]);
     return { result, isError: false };
   } catch (err) {
     if (err instanceof ToolTimeoutError) {

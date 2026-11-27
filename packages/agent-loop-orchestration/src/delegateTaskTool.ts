@@ -27,7 +27,7 @@
  *     result envelope is available.
  */
 
-import type { AgentTool } from "@maya-ai/tool-agent-runtime";
+import type { AgentTool, ToolExecutionContext } from "@maya-ai/tool-agent-runtime";
 import { Type, type Static } from "typebox";
 import { v4 as uuid } from "uuid";
 
@@ -50,6 +50,11 @@ import type {
   ChildRunResultEnvelope
 } from "./orchestrationTypes.js";
 import type { ProgressSink } from "./progress.js";
+import {
+  INHERIT_CONTEXT_MODE_DESCRIPTION,
+  inheritedRequestFromContext,
+  type InheritModeOptions
+} from "./inheritMode.js";
 
 // ---------------------------------------------------------------------------
 // LLM-facing schema
@@ -84,7 +89,20 @@ export const delegateTaskParameters = Type.Object({
   )
 });
 
-export type DelegateTaskInput = Static<typeof delegateTaskParameters>;
+/** `delegateTaskParameters` with "inherit" added to `contextMode`; used when `inherit` is enabled. */
+export const delegateTaskParametersWithInherit = Type.Object({
+  ...delegateTaskParameters.properties,
+  contextMode: Type.Optional(
+    Type.Union(
+      [Type.Literal("isolated"), Type.Literal("fork"), Type.Literal("inherit")],
+      {
+        description: `How much parent context the delegate receives. Defaults to isolated. ${INHERIT_CONTEXT_MODE_DESCRIPTION}`
+      }
+    )
+  )
+});
+
+export type DelegateTaskInput = Static<typeof delegateTaskParametersWithInherit>;
 
 // ---------------------------------------------------------------------------
 // Tool context
@@ -117,6 +135,12 @@ export interface DelegateToolContext {
    * delegate context aborts cooperatively too.
    */
   signal?: AbortSignal;
+  /**
+   * Enables `contextMode: "inherit"`: the child continues from this run's
+   * real model request so the provider's prompt cache is reused. Off by
+   * default; without it the tool schema and description are unchanged.
+   */
+  inherit?: InheritModeOptions;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,15 +154,16 @@ export interface DelegateToolContext {
 export function createDelegateTaskTool(
   context: DelegateToolContext
 ): AgentTool<typeof delegateTaskParameters> {
+  const description =
+    "Delegate a bounded research or validation task to a separate agent run. The delegated run executes independently and returns a structured result; this call blocks until it completes.";
   return {
     name: DELEGATE_TASK_TOOL_NAME,
     label: "Delegate Task",
-    description:
-      "Delegate a bounded research or validation task to a separate agent run. The delegated run executes independently and returns a structured result; this call blocks until it completes.",
-    parameters: delegateTaskParameters,
+    description: context.inherit ? `${description} ${INHERIT_CONTEXT_MODE_DESCRIPTION}` : description,
+    parameters: (context.inherit ? delegateTaskParametersWithInherit : delegateTaskParameters) as typeof delegateTaskParameters,
     executionMode: "sequential",
-    execute: async (_toolCallId, params) => {
-      return executeDelegateTask(params as DelegateTaskInput, context);
+    execute: async (_toolCallId, params, _signal, _onUpdate, executionContext) => {
+      return executeDelegateTask(params as DelegateTaskInput, context, executionContext);
     }
   };
 }
@@ -164,10 +189,13 @@ export function createDelegateTaskToolDefinition(
 
 /**
  * Public for tests. Shaped to match what `AgentTool.execute` returns.
+ * `executionContext` is the runtime's tool execution context; "inherit"
+ * takes the parent request from it.
  */
 export async function executeDelegateTask(
   input: DelegateTaskInput,
-  context: DelegateToolContext
+  context: DelegateToolContext,
+  executionContext?: ToolExecutionContext
 ): Promise<DelegateTaskToolResult> {
   const policy = context.policy ?? DEFAULT_ORCHESTRATION_POLICY;
   const validation = validateDelegateInput(input, context, policy);
@@ -176,6 +204,10 @@ export async function executeDelegateTask(
   }
 
   const request = toChildRunRequest(input, context, policy);
+  if (request.contextMode === "inherit") {
+    const inherited = inheritedRequestFromContext(executionContext);
+    if (inherited) request.inherited = inherited;
+  }
 
   const envelope = await executeChildRun({
     request,
@@ -188,7 +220,8 @@ export async function executeDelegateTask(
     runtimeFactory: context.runtimeFactory,
     buildSystemPrompt: context.buildSystemPrompt,
     buildTools: context.buildTools,
-    signal: context.signal
+    signal: context.signal,
+    ...(context.inherit ? { inherit: context.inherit } : {})
   });
 
   return toToolResult(envelope);
@@ -271,12 +304,16 @@ function validateDelegateInput(
       message: `prompt exceeds maxChildPromptChars (${policy.maxChildPromptChars})`
     };
   }
-  if (
-    input.contextMode !== undefined &&
-    input.contextMode !== "isolated" &&
-    input.contextMode !== "fork"
-  ) {
-    return { message: `contextMode must be "isolated" or "fork"` };
+  const mode = input.contextMode ?? policy.defaultContextMode;
+  if (mode === "inherit" && !context.inherit) {
+    return { message: `contextMode "inherit" is not enabled for this tool` };
+  }
+  if (mode !== "isolated" && mode !== "fork" && mode !== "inherit") {
+    return {
+      message: context.inherit
+        ? `contextMode must be "isolated", "fork" or "inherit"`
+        : `contextMode must be "isolated" or "fork"`
+    };
   }
   if (input.maxTokens !== undefined) {
     if (!Number.isFinite(input.maxTokens) || input.maxTokens <= 0) {
