@@ -8,6 +8,7 @@ import {
   createMemoryRuntimeContext,
   loadPinnedMemory,
   pinnedMemoryMessages,
+  pinnedMemoryPrompt,
   stampMemoryProvenance,
   type MarkdownWikiEngineStore,
   type MarkdownWikiFileStore
@@ -139,6 +140,30 @@ test("pinnedMemoryMessages: the block as its own user message ahead of the promp
     ]
   );
   assert.equal(replay.calls[0]!.messages.length, 2, "the model saw the pinned message, then the prompt");
+});
+
+test("pinnedMemoryPrompt: the block and the prompt in one user message", async () => {
+  assert.equal(pinnedMemoryPrompt(undefined, "hello"), "hello");
+  assert.equal(pinnedMemoryPrompt("", "hello"), "hello");
+  const pinned = collectPinnedMemory(list(), { prefix: "system/", maxChars: 200 });
+  assert.equal(pinnedMemoryPrompt(pinned.block, ""), pinned.block);
+  const prompt = pinnedMemoryPrompt(pinned.block, "hello");
+  assert.equal(prompt, `${pinned.block}\n\nhello`);
+
+  const replay = createReplayModel([replyText("noted")]);
+  const adapter = createRuntimeToolLlmAdapter({ model: replay.model });
+  const output = (await adapter.runToolAgent({ systemPrompt: "s", prompt, tools: [], sessionId: "t" }))!;
+  replay.dispose();
+  const transcript = output.state!.messages;
+  assert.equal(output.text, "noted");
+  assert.deepEqual(
+    transcript.map((m) => m.role),
+    ["user", "assistant"]
+  );
+  const first = userText(transcript[0]!.content as string);
+  assert.ok(first.startsWith("<pinned-memory>"));
+  assert.ok(first.endsWith("</pinned-memory>\n\nhello"));
+  assert.equal(replay.calls[0]!.messages.length, 1, "the model saw a single user message");
 });
 
 function userText(content: string | ReadonlyArray<{ type: string; text?: string }>): string {
