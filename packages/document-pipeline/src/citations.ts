@@ -84,8 +84,8 @@ export function findQuoteSpan(text: string, quote: string): { start: number; end
 /**
  * Normalized box covering the layout blocks that overlap `span` of `text`.
  * Blocks are aligned to the text in order (each block found after the
- * previous one); when the alignment fails, or no overlapping block has a box,
- * the result is `undefined`.
+ * previous one); when the alignment fails before the span ends, or no
+ * overlapping block has a box, the result is `undefined`.
  */
 export function boxForSpan(
   text: string,
@@ -100,7 +100,11 @@ export function boxForSpan(
     const b = normalizeWithMap(block.text).text;
     if (!b) continue;
     const at = t.text.indexOf(b, cursor);
-    if (at < 0) return undefined;
+    // A block that cannot be aligned only matters before the span ends.
+    if (at < 0) {
+      if (cursor > 0 && t.map[cursor - 1]! >= span.end - 1) break;
+      return undefined;
+    }
     cursor = at + b.length;
     const start = t.map[at]!;
     const end = originalEnd(text, t.map, at + b.length - 1);

@@ -1,5 +1,6 @@
 import type { ExtractorPlugin, ExtractorPluginRequest, ExtractorPluginResult } from "../extract.js";
 import { wordBoxesToLayoutBlocks } from "../ocr.js";
+import type { BoundingBox, LayoutBlock } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // PDF Extractor
@@ -16,9 +17,20 @@ import { wordBoxesToLayoutBlocks } from "../ocr.js";
 // pdfjs types (structural — avoids importing the module's TS types)
 // ---------------------------------------------------------------------------
 
-type PdfTextItem = { str: string };
+type PdfTextItem = {
+  str: string;
+  /** Text matrix [a, b, c, d, e, f] in PDF user space; (e, f) is the baseline start. */
+  transform?: number[];
+  width?: number;
+  height?: number;
+};
 type PdfTextContent = { items: Array<PdfTextItem | object> };
-type PdfViewport = { width: number; height: number };
+type PdfViewport = {
+  width: number;
+  height: number;
+  /** User space → viewport (top-left origin), including page rotation and the MediaBox offset. */
+  transform?: number[];
+};
 
 type PdfPage = {
   getTextContent(): Promise<PdfTextContent>;
@@ -78,6 +90,34 @@ async function loadCanvas(): Promise<CanvasModule> {
 
 const MAX_TEXT_CHARS = 200_000;
 const MAX_RENDER_DIMENSION = 10_000;
+
+/**
+ * Normalized (0–1, top-left origin) box of a text item on its page, or
+ * undefined when the item has no usable geometry. Axis-aligned: the box of
+ * the item's two corners after the viewport transform.
+ */
+function itemBox(item: PdfTextItem, viewport: PdfViewport): BoundingBox | undefined {
+  const t = item.transform;
+  const m = viewport.transform;
+  if (!t || t.length < 6 || !m || m.length < 6) return undefined;
+  if (!(viewport.width > 0) || !(viewport.height > 0)) return undefined;
+  const width = item.width ?? 0;
+  const height = item.height || Math.hypot(t[2]!, t[3]!);
+  const x0 = t[4]!;
+  const y0 = t[5]!;
+  const apply = (x: number, y: number): [number, number] => [
+    m[0]! * x + m[2]! * y + m[4]!,
+    m[1]! * x + m[3]! * y + m[5]!,
+  ];
+  const [ax, ay] = apply(x0, y0);
+  const [bx, by] = apply(x0 + width, y0 + height);
+  const left = Math.max(0, Math.min(ax, bx) / viewport.width);
+  const top = Math.max(0, Math.min(ay, by) / viewport.height);
+  const right = Math.min(1, Math.max(ax, bx) / viewport.width);
+  const bottom = Math.min(1, Math.max(ay, by) / viewport.height);
+  if (![left, top, right, bottom].every(Number.isFinite) || right <= left || bottom < top) return undefined;
+  return { x: left, y: top, width: right - left, height: bottom - top, coordSpace: "normalized" };
+}
 
 function appendText(parts: string[], pageText: string, currentLen: number): number {
   if (!pageText) return currentLen;
@@ -145,17 +185,32 @@ async function extractPdf(request: ExtractorPluginRequest): Promise<ExtractorPlu
     : Array.from({ length: Math.min(pdf.numPages, request.limits.maxPages) }, (_, i) => i + 1);
 
   // --- Text extraction ---
+  // Each non-empty text item also becomes a positioned layout block, in text
+  // order, so citations on native-text pages can point at a region.
   const textParts: string[] = [];
+  const textBlocks: LayoutBlock[] = [];
   let textLen = 0;
   for (const pageNum of pageNumbers) {
     const page = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
-    const pageText = content.items
-      .map((item) => ("str" in item ? (item as PdfTextItem).str : ""))
-      .filter(Boolean)
-      .join(" ");
+    const items = content.items.filter(
+      (item): item is PdfTextItem => "str" in item && Boolean((item as PdfTextItem).str),
+    );
+    const pageText = items.map((item) => item.str).join(" ");
     if (pageText) {
+      const viewport = page.getViewport({ scale: 1 });
+      const before = textLen;
       textLen = appendText(textParts, pageText, textLen);
+      // Keep only the blocks of the text that was kept (a page cut at MAX_TEXT_CHARS).
+      let used = 0;
+      for (const item of items) {
+        used += item.str.length + 1;
+        if (before + used - 1 > textLen) break;
+        const block: LayoutBlock = { text: item.str };
+        const box = itemBox(item, viewport);
+        if (box) block.boundingBox = box;
+        textBlocks.push(block);
+      }
       if (textLen >= MAX_TEXT_CHARS) break;
     }
   }
@@ -163,7 +218,7 @@ async function extractPdf(request: ExtractorPluginRequest): Promise<ExtractorPlu
 
   // If native text is sufficient, return it without rendering.
   if (text.trim().length >= request.limits.minTextChars) {
-    return { text, blocks: [], images: [], ocrUsed: false };
+    return { text, blocks: textBlocks, images: [], ocrUsed: false };
   }
 
   // Try OCR plugin first (if provided and text is insufficient)
@@ -177,7 +232,7 @@ async function extractPdf(request: ExtractorPluginRequest): Promise<ExtractorPlu
     canvasMod = await loadCanvas();
   } catch (err) {
     request.onImageExtractionError?.(err);
-    return { text, blocks: [], images: [], ocrUsed: false };
+    return { text, blocks: textBlocks, images: [], ocrUsed: false };
   }
 
   const images: ExtractorPluginResult["images"] = [];
@@ -227,8 +282,9 @@ async function extractPdf(request: ExtractorPluginRequest): Promise<ExtractorPlu
     images.push({ type: "image", data: png.toString("base64"), mimeType: "image/png" });
   }
 
+  // OCR text replaces the native text, so its word boxes replace the native blocks.
   const finalText = ocrUsed ? textParts.join("\n\n") : text;
-  return { text: finalText, blocks: ocrBlocks, images, ocrUsed, ocrProviderId };
+  return { text: finalText, blocks: ocrUsed ? ocrBlocks : textBlocks, images, ocrUsed, ocrProviderId };
 }
 
 // ---------------------------------------------------------------------------
