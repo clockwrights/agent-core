@@ -158,6 +158,7 @@ The "unknown" fallback group has `classificationTier: <minTier>` so the result r
 | `tierAThreshold` | `[0,1]` | Min Tier-A confidence to short-circuit Tier B/C |
 | `tierBThreshold` | `[0,1]` | Min Tier-B confidence to skip Tier C |
 | `minTier` | enum | `tier-a \| tier-b \| tier-c` — lowest tier the classifier may attempt |
+| `fieldCitations` | boolean | Opt-in, default off. Each field gets `citations` with a verified quote — see [Field citations](#field-citations-opt-in) |
 | `policyName` | string | Named policy in the registry (open-vocabulary if absent) |
 | `taskIntent` | string | Continuation goal — gates whether the continuation handler runs |
 | `language` | BCP-47 | Hint, e.g. `en`, `ar-EG` |
@@ -177,6 +178,7 @@ The package exports `loadPipelineDefaults()` which reads these env vars once and
 | `LLM_DEFAULT_TIER_A_THRESHOLD` | `0.8` | Default applied when the request omits `tierAThreshold`. |
 | `LLM_DEFAULT_TIER_B_THRESHOLD` | `0.6` | Default applied when the request omits `tierBThreshold`. |
 | `LLM_DEFAULT_MIN_TIER` | `tier-a` | Default applied when the request omits `minTier`. |
+| `LLM_DEFAULT_FIELD_CITATIONS` | off | `true`/`1` or `false`/`0`: default for `fieldCitations`. Unset: `fieldCitations` is absent from the defaults. |
 
 Invalid env values (unknown enum, non-numeric threshold, out-of-range threshold) produce a `console.warn` at boot and the field falls back to the built-in default. The pipeline never refuses to start because of a bad env var.
 
@@ -241,6 +243,32 @@ Apps are free to plug in any `ContinuationHandler` — the pipeline core never d
 
 ---
 
+## Field citations (opt-in)
+
+With `fieldCitations: true`, every extracted field carries evidence that the pipeline has **checked**:
+
+```ts
+type FieldCitation = {
+  unitIndex: number;         // unit the quote was found in
+  sourceFileIndex: number;   // file within the submission
+  page: number;              // 1-based page within that file
+  quote: string;             // the quoted text (trimmed, ≤ 300 chars)
+  textSpan?: { start; end }; // character span in unitExtractions[unit].text, when found
+  boundingBox?: BoundingBox; // normalized box over the OCR words of the span, when the unit has any
+  status: "verified" | "not-found" | "unverifiable" | "deterministic";
+};
+```
+
+- **Tier B / C** ask the model for a verbatim `quote` per field (one extra key in the output schema; Tier B's answer cap grows from 1 024 to 2 048 tokens). The pipeline then looks for the quote in the units' **full** extracted text, ignoring case, Unicode width forms and whitespace. It checks the unit the model named first, then the group's other units. A found quote is `verified`. A quote that is not in any unit's text is `not-found`. When the named unit has no text (image only), the quote cannot be checked and is `unverifiable`. Low-confidence refinement in Tier C asks for a quote too, and that refined quote is the one checked.
+- **Tier A** MRZ fields cite their MRZ line with status `deterministic`.
+- **Unit correction:** when a quote is found in a different unit of the group than the one reported, `sourceUnitIndex` is set to the unit that holds it. For model-reported fields, the group also gets the flag `source-unit-corrected:<field>`.
+- **Boxes** come from positioned `LayoutBlock`s, which today means OCR word boxes. Native PDF text has no positions yet, so those citations have a span but no box. `ExtractedField.boundingBox` is set from the citation's box.
+- **Confidence is never rewritten.** A `not-found` citation leaves the field's `confidence` as reported. Use the status, or review routing, to act on it.
+- Fields with an empty value, or for which the model gave no quote, get `citations: []`. Without the option, prompts and output are unchanged (no `citations` key).
+- Helpers: `findQuoteSpan(text, quote)`, `boxForSpan(text, blocks, span)`, `citeQuote(field, quote, context)`, `attachFieldCitations(group, quotes, context)`, `MAX_CITATION_QUOTE_CHARS`. The prompt builders `buildClassificationPrompt(…, options?)` and `buildFieldExtractionPrompt(…, options?)` take `{ fieldCitations }` (`ClassificationPromptOptions`).
+
+---
+
 ## Lower-level helpers
 
 `runDocumentPipeline` is the normal entry point. These exports let you run or test single stages:
@@ -277,7 +305,7 @@ Types not shown elsewhere in this README, by area:
 - **Request and package:** `DocumentPipelineExecutionMode` (`"deterministic-first" | "hybrid" | "full-multimodal"`), `DocumentPipelineContext` (`{ language?, country?, submissionIntent? }`), `FileRecord` (one ingested file: name, SHA-256, size, MIME type, time), `ProcessingLogEntry` (`{ stage, status, detail?, durationMs? }`).
 - **Units and extraction:** `DocumentUnit` / `DocumentUnitKind` (`"page" | "image" | "sheet" | "section" | "text-block"`), `UnitExtractionResult`, `ExtractedImage`, `BoundingBox` with `CoordSpace` (`"pixels" | "normalized"`), `ExtractionLimits`, and the extractor plugin types `ExtractorPluginRequest` / `ExtractorPluginResult`.
 - **OCR:** `OCRResult` (`{ text, wordBoxes?, confidence?, detectedLanguage? }`), `OCRWordBox` and `OCROptions` (`{ language?, requestLayout? }`).
-- **Segmentation and classification:** `SegmentationRequest`, `SegmentationMap` (`{ groups }`), `SegmentationMethod` (`"structural" | "llm-assisted" | "single-group"`), `ClassificationRequest`, `ClassificationSourceDocument` (a source file passed for native PDF), `ClassificationTier` (`"tier-a" | "tier-b" | "tier-c"`), `ClassifiedDocumentGroup` and `ExtractedField` (`{ name, value, confidence, sourceUnitIndex, boundingBox?, method }`).
+- **Segmentation and classification:** `SegmentationRequest`, `SegmentationMap` (`{ groups }`), `SegmentationMethod` (`"structural" | "llm-assisted" | "single-group"`), `ClassificationRequest`, `ClassificationSourceDocument` (a source file passed for native PDF), `ClassificationTier` (`"tier-a" | "tier-b" | "tier-c"`), `ClassifiedDocumentGroup` and `ExtractedField` (`{ name, value, confidence, sourceUnitIndex, boundingBox?, method, citations? }`), `FieldCitation` / `FieldCitationStatus` (see [Field citations](#field-citations-opt-in)), `CitationContext` (`{ group, units, extractions }`).
 - **LLM adapter parts:** `PipelineImage` (`{ data, mimeType }`) and `PipelineDocument` (`{ data, mimeType, name? }`).
 - **Assembly and continuation:** `AssemblyInput`, `ContinuationRequest`, `ContinuationResult` (`{ results, evidence, unresolvedItems, suggestedNextSteps }`), `ContinuationEvidence`, `UnresolvedItem` and `LlmContinuationOptions` (`{ maxTokens?, sessionIdPrefix? }`).
 - **ZIP:** `ZipExpansionOptions` (`{ maxEntryBytes?, maxUnits?, parallelism? }`), `ZipExtractionParallelism` (`"sequential" | "parallel"`) and `ZipExpansionResult` (`{ fileRecords, entryBuffers, units, warnings }`).

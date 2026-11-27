@@ -70,6 +70,12 @@ export type DocumentPipelineRequest = {
    *   and the group falls back to "unknown".
    */
   minTier?: ClassificationTier;
+  /**
+   * Ask the classifier for a verbatim quote per field and verify it against
+   * the extracted text; each field then carries `citations`. Default false
+   * (prompts and output unchanged).
+   */
+  fieldCitations?: boolean;
   /** Hard caps on resource usage. Falls back to pipeline-level defaults when absent. */
   limits?: Partial<DocumentPipelineLimits>;
 };
@@ -245,6 +251,32 @@ export type SegmentationMap = {
 
 export type ClassificationTier = "tier-a" | "tier-b" | "tier-c";
 
+/**
+ * How a field citation was checked.
+ * - `verified`: the quote was found in the unit's extracted text;
+ * - `not-found`: the quote is not in the text of any unit of the group;
+ * - `unverifiable`: the unit has no extracted text (image only), so it could not be checked;
+ * - `deterministic`: produced by a Tier-A rule from a known text position.
+ */
+export type FieldCitationStatus = "verified" | "not-found" | "unverifiable" | "deterministic";
+
+/** Evidence for an extracted field value (with `fieldCitations: true`). */
+export type FieldCitation = {
+  /** 1-based unit the quote was found in (or the unit the model named, when not verified). */
+  unitIndex: number;
+  /** Index into `AnalysisPackage.fileRecords` of the unit's file. */
+  sourceFileIndex: number;
+  /** 1-based page of the unit within its file. */
+  page: number;
+  /** The quoted text, trimmed (at most 300 characters). */
+  quote: string;
+  /** Character span of the quote in the unit's extracted text, when found. */
+  textSpan?: { start: number; end: number };
+  /** Union of the positioned layout blocks the span covers (normalized), when the unit has any. */
+  boundingBox?: BoundingBox;
+  status: FieldCitationStatus;
+};
+
 export type ExtractedField = {
   /** Field name as declared in the document policy or derived by the classifier. */
   name: string;
@@ -257,6 +289,11 @@ export type ExtractedField = {
   boundingBox?: BoundingBox;
   /** Extraction method: "deterministic", "ocr", "llm-text", "llm-multimodal". */
   method: string;
+  /**
+   * Evidence for the value. Present only with `fieldCitations: true`; empty
+   * when the field has no value or the model gave no quote.
+   */
+  citations?: FieldCitation[];
 };
 
 export type ClassifiedDocumentGroup = {

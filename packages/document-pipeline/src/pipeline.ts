@@ -353,6 +353,7 @@ export async function runDocumentPipeline(
         tierBThreshold: request.tierBThreshold,
         minTier: request.minTier,
         sourceDocuments: nativePdfSources(deps, fileRecords, entryBuffers),
+        ...(request.fieldCitations ? { fieldCitations: true } : {}),
       });
       logStage(
         log,
