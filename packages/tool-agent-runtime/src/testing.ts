@@ -30,7 +30,7 @@ import {
   type Usage,
 } from "@earendil-works/pi-ai";
 import type { AgentEventSink } from "./loop.js";
-import type { AgentEvent, AgentTool, AgentToolResult } from "./types.js";
+import type { AgentEvent, AgentTool, AgentToolResult, ToolExecutionContext } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Cassette format
@@ -302,6 +302,8 @@ export interface ToolCallRecord {
   error?: string;
   /** Whether a signal was passed and was aborted when execute settled. */
   aborted: boolean;
+  /** The execution context the runtime passed (not cloned), when there was one. */
+  context?: ToolExecutionContext;
 }
 
 /**
@@ -317,11 +319,13 @@ export function recordTool<P extends TSchema, D>(tool: AgentTool<P, D>): { tool:
       params: unknown,
       signal?: AbortSignal,
       onUpdate?: Parameters<AgentTool<P, D>["execute"]>[3],
+      context?: Parameters<AgentTool<P, D>["execute"]>[4],
     ) => {
       const record: ToolCallRecord = { toolCallId, params: structuredClone(params), aborted: false };
+      if (context !== undefined) record.context = context;
       calls.push(record);
       try {
-        const result = await tool.execute(toolCallId, params as never, signal, onUpdate);
+        const result = await tool.execute(toolCallId, params as never, signal, onUpdate, context);
         record.result = result;
         return result;
       } catch (err) {

@@ -146,6 +146,7 @@ interface AgentTool<TParameters, TDetails = any> extends Tool<TParameters> {
     params: Static<TParameters>,
     signal?: AbortSignal,
     onUpdate?: AgentToolUpdateCallback<TDetails>,
+    context?: ToolExecutionContext,
   ) => Promise<AgentToolResult<TDetails>>;
   executionMode?: "sequential" | "parallel";
   timeoutMs?: number;
@@ -155,6 +156,7 @@ interface AgentTool<TParameters, TDetails = any> extends Tool<TParameters> {
 - `label` — human-readable label for UI / progress messages.
 - `prepareArguments` — optional shim applied **before** schema validation. Useful for adapting legacy or LLM-produced argument shapes.
 - `execute` — throws on failure rather than encoding errors in `content`; the loop converts thrown errors into `isError: true` tool-result messages.
+- `context` (fifth argument, set by the runtime; tools may ignore it) — `{ toolCallId, turn, sessionId?, request? }`. `request` is the model call that produced the tool call, exactly as it was sent: `{ model, reasoning?, systemPrompt, tools, messages }`, after any `prepareStep` override. `messages` ends with the message before the assistant reply that holds the call. It is a frozen snapshot shared by every tool of the batch. `request` is absent for pending calls run from a saved state before this invocation's first model call. A tool can use it to see the conversation, or to start a related model call that reuses the provider's prompt cache (same tools, system prompt, session id and message prefix). Callers outside the runtime may omit `context`; wrappers should pass it on.
 - `executionMode` — `"sequential"` forces the entire batch to run one tool at a time (or, with `toolBatchStrategy: "sequential-barriers"`, makes the tool run alone at its position in the batch); `"parallel"` (default) lets the batch run concurrently (bounded by `maxParallelTools` when set).
 - `timeoutMs` — per-tool timeout, overriding the run's `toolTimeoutMs`. On timeout the `signal` passed to `execute` is aborted with a `ToolTimeoutError` as its `reason`, the call stops being awaited, and the model gets an error result with `details: { error: "ToolTimeoutError", timeoutMs }`. Updates the tool sends after that are dropped. Without a timeout, `execute` receives the caller's `signal` unchanged.
 
@@ -327,7 +329,7 @@ import {
   createReplayModel,   // scripted model: answers each call with the next step (records contexts and non-secret call options)
   createModelRecorder, // wraps a real model and records its responses as a cassette
   replyText, replyToolCalls, replyError, // build scripted assistant replies
-  recordTool,          // wraps a tool and records params / result / error per call
+  recordTool,          // wraps a tool and records params / result / error / context per call
   collectEvents,       // event sink that keeps every AgentEvent
 } from "@maya-ai/tool-agent-runtime/testing";
 ```
@@ -373,6 +375,7 @@ A cassette stores model responses plus a small fingerprint of each request (mess
 Types not shown elsewhere in this README, by area:
 
 - `ToolCallInfo` — `{ id, name, arguments }`, a tool call as the approval hooks see it (arguments already validated).
+- `ToolExecutionContext` — the fifth argument of `execute`; `ToolExecutionRequest` — its `request` field (see `AgentTool`).
 - `PrepareStepContext` — `{ turn, steps, messages }`, the input of `prepareStep`; `PrepareStepResult` — `{ model?, systemPrompt?, reasoning?, activeTools?, messages? }`, its overrides for one model call.
 - `StopConditionState` — `{ steps, totalUsage }`, the input of a stop condition after each tool batch.
 - `CompactionTrigger` — `"threshold" | "overflow" | "manual"`; `CompactionRecord` — one entry of `RunState.compactions`.

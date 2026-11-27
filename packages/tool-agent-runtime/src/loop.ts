@@ -55,6 +55,8 @@ import {
   type BeforeToolCallContext,
   type ToolApproval,
   type ToolCallDecision,
+  type ToolExecutionContext,
+  type ToolExecutionRequest,
   type ToolResultOverride,
   type AgentStep,
   type AgentTool,
@@ -255,6 +257,7 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
     defaultTimeoutMs: input.toolTimeoutMs,
     maxParallel: input.maxParallelTools,
     batchStrategy: input.toolBatchStrategy ?? "serialize-batch",
+    sessionId: input.sessionId,
   };
 
   const totalUsage = resumeFrom ? cloneUsage(resumeFrom.usage) : emptyUsage();
@@ -440,7 +443,7 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
       // (denied, blocked, invalid) are recorded now; allowed calls stay
       // pending and are decided again on resume.
       const finalPlans = plans.filter((p): p is ErrorPlan => p.kind === "error");
-      const early = await executeToolCalls(finalPlans, { ...execution, tools: turnTools, turn: turns, failures: [] });
+      const early = await executeToolCalls(finalPlans, { ...execution, tools: turnTools, turn: turns, request: currentRequest, failures: [] });
       toolCallsExecuted += finalPlans.filter((p) => p.counts).length;
       record(early.messages);
       for (const ask of asks) {
@@ -464,6 +467,7 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
       ...execution,
       tools: turnTools,
       turn: turns,
+      request: currentRequest,
       afterToolCall: input.afterToolCall,
       failures,
     });
@@ -514,6 +518,8 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
   // Tools offered on the latest model call (prepareStep may narrow them);
   // pending calls from a saved state run against the full tool list.
   let currentTools: AgentTool<any>[] | undefined;
+  // The latest model request, passed to tools as `context.request`.
+  let currentRequest: ToolExecutionRequest | undefined;
   // Calls waiting for a human decision when the run ends "interrupted".
   let interruptions: ToolInterruption[] | undefined;
 
@@ -631,6 +637,13 @@ async function runLoop(input: ToolAgentRunInput, emit: AgentEventSink): Promise<
 
     compactedForThisCall = false;
     overflowRetried = false;
+    currentRequest = {
+      model: prepared?.model ?? input.model,
+      ...(stepStreamOptions.reasoning !== undefined ? { reasoning: stepStreamOptions.reasoning } : {}),
+      systemPrompt: context.systemPrompt ?? "",
+      tools: Object.freeze(stepTools.slice()),
+      messages: Object.freeze(context.messages),
+    };
     messages.push(assistantMessage);
     turns += 1;
     const turnUsage = usageOf(assistantMessage);
@@ -877,10 +890,14 @@ interface ToolExecutionOptions {
   defaultTimeoutMs: number | undefined;
   maxParallel: number | undefined;
   batchStrategy: "serialize-batch" | "sequential-barriers";
+  sessionId: string | undefined;
+  /** Turn number reported to tools and `afterToolCall`. */
+  turn?: number;
+  /** The model request that produced the batch, if any. */
+  request?: ToolExecutionRequest;
 }
 
 interface BatchOptions extends ToolExecutionOptions {
-  /** Turn number reported to `afterToolCall`. */
   turn: number;
   afterToolCall?: ToolAgentRunInput["afterToolCall"];
   /** Collects `afterToolCall` failure messages. */
@@ -1037,10 +1054,14 @@ async function runTool(
     options.emit({ type: "tool_execution_update", toolCallId: tc.id, toolName: tc.name, args: tc.arguments, partialResult });
   };
 
+  const context: ToolExecutionContext = { toolCallId: tc.id, turn: options.turn ?? 0 };
+  if (options.sessionId !== undefined) context.sessionId = options.sessionId;
+  if (options.request !== undefined) context.request = options.request;
+
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     if (timeoutMs === undefined) {
-      const result = await tool.execute(tc.id, args as never, options.signal, onUpdate);
+      const result = await tool.execute(tc.id, args as never, options.signal, onUpdate, context);
       return { result, isError: false };
     }
 
@@ -1055,7 +1076,7 @@ async function runTool(
         reject(error);
       }, timeoutMs);
     });
-    const result = await Promise.race([tool.execute(tc.id, args as never, signal, onUpdate), timeout]);
+    const result = await Promise.race([tool.execute(tc.id, args as never, signal, onUpdate, context), timeout]);
     return { result, isError: false };
   } catch (err) {
     if (err instanceof ToolTimeoutError) {

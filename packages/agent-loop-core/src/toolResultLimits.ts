@@ -84,8 +84,8 @@ export function limitToolResult<P extends TSchema, D>(tool: AgentTool<P, D>, opt
   }
   return {
     ...tool,
-    execute: async (toolCallId: string, params: unknown, signal?: AbortSignal, onUpdate?: unknown) => {
-      const result = await tool.execute(toolCallId, params as never, signal, onUpdate as never);
+    execute: async (toolCallId: string, params: unknown, signal?: AbortSignal, onUpdate?: unknown, context?: unknown) => {
+      const result = await tool.execute(toolCallId, params as never, signal, onUpdate as never, context as never);
       return truncateResult(result, toolCallId, maxChars, store);
     }
   } as AgentTool<P, D>;

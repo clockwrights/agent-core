@@ -3,7 +3,9 @@ import type {
   AssistantMessageEvent,
   ImageContent,
   Message,
+  Model,
   TextContent,
+  ThinkingLevel,
   Tool,
   ToolResultMessage,
   Usage,
@@ -154,6 +156,37 @@ export interface AgentToolResult<T> {
 /** Callback used by tools to stream partial execution updates. */
 export type AgentToolUpdateCallback<T = any> = (partialResult: AgentToolResult<T>) => void;
 
+/** The model request that produced a tool call, exactly as it was sent. */
+export interface ToolExecutionRequest {
+  model: Model<any>;
+  /** Reasoning level of the call; undefined when extended thinking was off. */
+  reasoning?: ThinkingLevel;
+  systemPrompt: string;
+  /** Tools offered on the call, in the order sent. */
+  tools: readonly AgentTool<any>[];
+  /**
+   * Messages sent on the call (after any `prepareStep` override). They end
+   * with the message before the assistant reply that holds the tool call.
+   * A frozen snapshot, shared by every tool of the batch.
+   */
+  messages: readonly AgentMessage[];
+}
+
+/** Fifth argument of `AgentTool.execute`: where the call came from. */
+export interface ToolExecutionContext {
+  toolCallId: string;
+  /** 1-based turn of the model call that requested the tool. */
+  turn: number;
+  /** The run's session id, when it has one. */
+  sessionId?: string;
+  /**
+   * The model request that produced the call. Absent for pending calls run
+   * from a saved state (`resumeFrom` / `messages`) before any model call of
+   * this invocation.
+   */
+  request?: ToolExecutionRequest;
+}
+
 /**
  * Tool definition consumed by the agent runtime.
  * Extends pi-ai's Tool schema type with runtime execution metadata.
@@ -166,12 +199,17 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
    * Useful for adapting legacy or LLM-produced argument shapes.
    */
   prepareArguments?: (args: unknown) => Static<TParameters>;
-  /** Execute the tool. Throw on failure rather than encoding errors in content. */
+  /**
+   * Execute the tool. Throw on failure rather than encoding errors in content.
+   * `context` is set when the runtime runs the tool; callers outside the
+   * runtime may omit it.
+   */
   execute: (
     toolCallId: string,
     params: Static<TParameters>,
     signal?: AbortSignal,
     onUpdate?: AgentToolUpdateCallback<TDetails>,
+    context?: ToolExecutionContext,
   ) => Promise<AgentToolResult<TDetails>>;
   /**
    * Per-tool execution mode.
